@@ -21,11 +21,15 @@ def test_cli_requires_command():
 
 
 def test_cli_card_help():
-    result = runner.invoke(app, ["card", "--help"])
+    result = runner.invoke(
+        app,
+        ["card", "--help"],
+        env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"},
+    )
     assert result.exit_code == 0
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     assert "--session" in clean or "-s" in clean
-    assert "--out" in clean or "-o" in clean
+    assert "--out" in clean
     assert "--redact-paths" in clean
 
 

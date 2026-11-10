@@ -6,3 +6,4 @@ from receiptd.hooks.claude_code_gate import main
 
 if __name__ == "__main__":
     sys.exit(main())
+
