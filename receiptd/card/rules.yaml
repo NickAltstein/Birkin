@@ -1,0 +1,94 @@
+# Trifecta Card classification rules.
+# Deterministic, zero-LLM. Extend by adding entries to the `extra` lists;
+# values are (shell-style) glob patterns matched case-insensitively against
+# full paths, or regex matched against commands / URLs / tool names.
+version: 1
+
+private:
+  # Filename / path glob patterns (matched against the basename and the
+  # full path, case-insensitive). System defaults from the Trifecta spec:
+  filename_globs:
+    - ".env*"
+    - "*.pem"
+    - "id_rsa*"
+    - "id_ed25519*"
+    - "*.key"
+  # Path fragments that mark a sensitive directory.
+  path_globs:
+    - "~/.ssh/*"
+    - "~/.aws/*"
+    - "~/.config/gh/*"
+    - "~/.gnupg/*"
+  # Case-insensitive substrings that mark any path as private.
+  path_keywords:
+    - "credentials"
+    - "secret"
+    - "password"
+    - "keychain"
+    - "token"
+  # User extensions (glob patterns, same matching as filename_globs).
+  extra_filename_globs: []
+
+untrusted:
+  # Tool names whose results are untrusted input.
+  tool_names:
+    - "WebFetch"
+    - "WebSearch"
+    - "web_search"
+    - "websearch"
+    - "browser_*"
+  # Downloads / clearly fetched content locations.
+  path_globs:
+    - "~/Downloads/*"
+    - "/tmp/*"
+    - "/var/tmp/*"
+  # Command tokens that mean "this command reads fetched content".
+  command_tokens:
+    - "curl"
+    - "wget"
+  # MCP servers that are known non-local (fetched from external hosts).
+  # Local development servers (stdio) are not listed here.
+  nonlocal_mcp_servers: []
+  # User extensions for tool names (glob patterns).
+  extra_tool_names: []
+
+egress:
+  # Command tokens that are outbound data transfer when executed.
+  command_tokens:
+    - "curl"
+    - "wget"
+    - "nc"
+    - "ncat"
+    - "netcat"
+    - "ssh"
+    - "scp"
+    - "sftp"
+    - "git push"
+    - "gh"
+    - "npm publish"
+    - "pip upload"
+    - "twine upload"
+    - "rsync"
+    - "ftp"
+    - "telnet"
+    - "mail"
+    - "sendmail"
+  # HTTP methods that constitute outbound data transfer.
+  http_methods:
+    - "POST"
+    - "PUT"
+    - "PATCH"
+    - "DELETE"
+  # Hosts exempt from the egress-by-WebFetch rule (read-only, well-known
+  # documentation hosts). Matched against the URL host, case-insensitively.
+  allowlisted_hosts:
+    - "localhost"
+    - "127.0.0.1"
+  # MCP tool-name / description tokens implying external write / send.
+  mcp_tokens:
+    - "send"
+    - "post"
+    - "create"
+    - "upload"
+  # User extensions for command tokens.
+  extra_command_tokens: []

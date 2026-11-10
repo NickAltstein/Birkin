@@ -1,0 +1,8 @@
+{"timestamp":"2026-11-09T16:00:00.000Z","type":"session_meta","payload":{"id":"ee55ee55-5555-4555-8555-555555555555","timestamp":"2026-11-09T16:00:00.000Z","cwd":"/users/nick/birkin","originator":"codex_cli_rs","cli_version":"0.20.0","instructions":"[REDACTED INSTRUCTIONS]"}}
+{"timestamp":"2026-11-09T16:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[REDACTED PROMPT]"}]}}
+{"timestamp":"2026-11-09T16:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_100","arguments":"{\"command\":[\"bash\",\"-lc\",\"ls -la src/\"]}"}}
+{"timestamp":"2026-11-09T16:00:10.000Z","type":"response_item","payload":{"type":"function_call","name":"read_file","call_id":"call_101","arguments":"{\"path\":\"/users/nick/birkin/src/main.py\"}"}}
+{"timestamp":"2026-11-09T16:00:15.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_102","arguments":"{\"command\":[\"bash\",\"-lc\",\"python -m pytest tests/ -q\"]}"}}
+{"timestamp":"2026-11-09T16:00:20.000Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","call_id":"call_103","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: src/main.py\\n+ # refactor notes\\n*** End Patch\\n\"}"}}
+{"timestamp":"2026-11-09T16:00:25.000Z","type":"turn_context","payload":{"model":"gpt-5.1-codex","effort":"medium","summary_policy":"auto"}}
+{"timestamp":"2026-11-09T16:00:30.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"[REDACTED REASONING]"}}
