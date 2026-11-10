@@ -39,7 +39,7 @@ DEFAULT_RULES = [
 
 
 def canonicalize_jcs(obj) -> str:
-    """RFC-8785 deterministic JSON serialization."""
+    """Deterministic canonical JSON serialization (sorted keys, compact)."""
     return canonical_json(obj).decode("utf-8")
 
 

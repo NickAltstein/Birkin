@@ -57,7 +57,7 @@ def test_canonical_json_no_whitespace():
     assert canonical_json({"a": [1, 2], "b": {"c": True}}) == '{"a":[1,2],"b":{"c":true}}'
 
 
-def test_canonical_json_escapes_per_rfc8785():
+def test_canonical_json_escapes():
     assert canonical_json({"k": 'a"b\\c\nd\te'}) == '{"k":"a\\"b\\\\c\\nd\\te"}'
 
 
