@@ -8,7 +8,7 @@
 [![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~67 ms cold CLI hook) while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
 
 ---
 
@@ -151,8 +151,9 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 | Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
 | :--- | :--- | :--- | :--- | :--- |
 | **AST & Policy-as-Code Evaluation** | 0.004 ms | 0.008 ms | < 1.0 MB | None |
-| **RFC-8785 Canonicalization + Ed25519 Signature** | 0.016 ms | 0.031 ms | < 1.5 MB | None |
-| **Total Receiptd Interceptor Overhead** | **0.020 ms** | **0.039 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| **RFC-8785 Canonicalization + Ed25519 Signature** | 0.015 ms | 0.025 ms | < 1.5 MB | None |
+| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.020 ms** | **0.025 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| **Full Claude Code Hook Execution (Cold Python Process)** | **67.0 ms** | **68.7 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
 
 Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`

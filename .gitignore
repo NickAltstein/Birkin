@@ -13,3 +13,5 @@ htmlcov/
 venv/
 *.json.tmp
 
+.birkin/
+.receiptd/

@@ -2,8 +2,10 @@
   "n_samples": 1000,
   "policy_eval_mean_ms": 0.004,
   "crypto_sign_mean_ms": 0.015,
-  "total_overhead_mean_ms": 0.019,
-  "p50_ms": 0.019,
-  "p95_ms": 0.021,
-  "p99_ms": 0.024
+  "in_process_total_overhead_mean_ms": 0.02,
+  "in_process_p50_ms": 0.02,
+  "in_process_p95_ms": 0.021,
+  "in_process_p99_ms": 0.025,
+  "cold_process_mean_ms": 67.0,
+  "cold_process_p95_ms": 68.7
 }
