@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Birkin Deterministic PreToolUse Gate for Claude Code.
+Receiptd Deterministic PreToolUse Gate for Claude Code.
 Reads tool invocation JSON from stdin.
 Exit 0 -> Tool allowed + signed Ed25519 receipt appended.
-Exit 2 -> Tool HARD BLOCKED (fail-closed) + signed rejection receipt emitted to stderr.
+Exit 2 -> Tool HARD BLOCKED (fail-closed) + signed rejection receipt emitted.
 """
 from __future__ import annotations
 
@@ -14,6 +14,21 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+from ..crypto import (
+    SigningKey,
+    canonical_json,
+    get_signing_key,
+)
+from ..ledger import (
+    GENESIS_HASH,
+    append_ledger_entry,
+    build_signed_checkpoint,
+    build_signed_receipt,
+    build_unsigned_signing_error_receipt,
+    read_ledger_state,
+)
 
 # Default high-risk deterministic signatures
 DEFAULT_RULES = [
@@ -25,11 +40,13 @@ DEFAULT_RULES = [
 
 def canonicalize_jcs(obj) -> str:
     """RFC-8785 deterministic JSON serialization."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return canonical_json(obj).decode("utf-8")
 
 
-def sha256_hex(data: str) -> str:
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+def sha256_hex(data: str | bytes) -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
 
 
 def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
@@ -44,7 +61,7 @@ def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
             score = min(100, score + weight)
             triggered.append(rule_id)
 
-    # Note: POL-03 specifically prevents the agent from editing .claude/settings.json to unhook Birkin
+    # Note: POL-03 specifically prevents the agent from editing .claude/settings.json to unhook Receiptd
     blocked = len(triggered) > 0 or score >= 75
     return blocked, score, triggered
 
@@ -54,58 +71,122 @@ def main() -> int:
     try:
         raw_stdin = sys.stdin.read()
         if not raw_stdin.strip():
-            sys.stderr.write("[BIRKIN FAIL-CLOSED] Empty stdin frame rejected.\n")
+            sys.stderr.write("[RECEIPTD FAIL-CLOSED] Empty stdin frame rejected.\n")
             return 2
 
         payload = json.loads(raw_stdin)
         blocked, score, triggered = evaluate_payload(payload)
-        decision = "BLOCKED_FAIL_CLOSED" if blocked else "ALLOWED_VERIFIED"
+        decision = "deny" if blocked else "allow"
+        reason = f"triggered rules: {', '.join(triggered)}" if blocked else "allowed"
 
-        # Default to .birkin/receipts.jsonl for backward compatibility, optionally support .receiptd/
-        ledger_path = ".birkin/receipts.jsonl"
+        # Resolve ledger path
+        ledger_path = ".receiptd/receipts.jsonl"
         for i, arg in enumerate(sys.argv):
             if arg == "--ledger" and i + 1 < len(sys.argv):
                 ledger_path = sys.argv[i + 1]
                 break
 
-        if not os.path.exists(ledger_path) and os.path.exists(".receiptd/receipts.jsonl"):
-            ledger_path = ".receiptd/receipts.jsonl"
+        if not os.path.exists(ledger_path) and os.path.exists(".birkin/receipts.jsonl"):
+            ledger_path = ".birkin/receipts.jsonl"
 
-        ledger_dir = os.path.dirname(ledger_path)
-        if ledger_dir:
-            os.makedirs(ledger_dir, exist_ok=True)
+        # Checkpoint interval
+        checkpoint_interval = 100
+        for i, arg in enumerate(sys.argv):
+            if arg == "--checkpoint-interval" and i + 1 < len(sys.argv):
+                try:
+                    checkpoint_interval = int(sys.argv[i + 1])
+                except ValueError:
+                    pass
+                break
+        if "RECEIPTD_CHECKPOINT_INTERVAL" in os.environ:
+            try:
+                checkpoint_interval = int(os.environ["RECEIPTD_CHECKPOINT_INTERVAL"])
+            except ValueError:
+                pass
 
-        prev_hash = "0" * 64
-        if os.path.exists(ledger_path):
-            with open(ledger_path, "rb") as f:
-                lines = f.read().splitlines()
-                if lines:
-                    last_receipt = json.loads(lines[-1].decode("utf-8"))
-                    prev_hash = last_receipt.get("receipt_sha256", prev_hash)
+        # Policy SHA-256
+        policy_sha256 = sha256_hex("DEFAULT_RULES:POL-01,POL-02,POL-03")
+        for i, arg in enumerate(sys.argv):
+            if arg == "--policy" and i + 1 < len(sys.argv):
+                p_file = Path(sys.argv[i + 1])
+                if p_file.exists():
+                    policy_sha256 = sha256_hex(p_file.read_bytes())
+                break
 
+        tool_name = str(payload.get("tool_name", ""))
+        tool_input = payload.get("tool_input", {})
+        args_sha256 = sha256_hex(canonical_json(tool_input))
+        session_id = str(payload.get("session_id") or os.environ.get("RECEIPTD_SESSION_ID", "default"))
+
+        # Read existing ledger state
+        prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
+        seq = receipt_count + 1
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-        receipt_core = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "tool_name": payload.get("tool_name"),
-            "tool_input": payload.get("tool_input"),
-            "decision": decision,
-            "blast_radius_score": score,
-            "triggered_rules": triggered,
-            "prev_receipt_hash": prev_hash,
-            "latency_ms": latency_ms,
-        }
-        receipt_hash = sha256_hex(canonicalize_jcs(receipt_core))
-        receipt_core["receipt_sha256"] = receipt_hash
 
-        with open(ledger_path, "a", encoding="utf-8") as f:
-            f.write(canonicalize_jcs(receipt_core) + "\n")
+        # Attempt to load signing key
+        sk: SigningKey
+        try:
+            sk = get_signing_key()
+        except Exception:
+            # Signing failure must fail-closed with exit 2 and write an unsigned deny receipt
+            unsigned_receipt = build_unsigned_signing_error_receipt(
+                v=1,
+                seq=seq,
+                ts=datetime.now(timezone.utc).isoformat(),
+                session_id=session_id,
+                tool=tool_name,
+                args_sha256=args_sha256,
+                decision="deny",
+                rule_ids=triggered,
+                blast_radius=score,
+                reason="receiptd: signing unavailable",
+                policy_sha256=policy_sha256,
+                prev_hash=prev_hash,
+                extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
+            )
+            append_ledger_entry(ledger_path, unsigned_receipt)
+            sys.stderr.write("receiptd: signing unavailable\n")
+            return 2
+
+        # Key loaded successfully: construct signed receipt
+        receipt = build_signed_receipt(
+            sk=sk,
+            v=1,
+            seq=seq,
+            ts=datetime.now(timezone.utc).isoformat(),
+            session_id=session_id,
+            tool=tool_name,
+            args_sha256=args_sha256,
+            decision=decision,
+            rule_ids=triggered,
+            blast_radius=score,
+            reason=reason,
+            policy_sha256=policy_sha256,
+            prev_hash=prev_hash,
+            extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
+        )
+        append_ledger_entry(ledger_path, receipt)
+
+        # Write Merkle checkpoint if interval reached
+        uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
+        if len(uncheckpointed_hashes) >= checkpoint_interval:
+            from_seq = last_cp_seq + 1
+            to_seq = seq
+            cp = build_signed_checkpoint(
+                sk=sk,
+                from_seq=from_seq,
+                to_seq=to_seq,
+                leaf_hashes=uncheckpointed_hashes,
+                prev_checkpoint_hash=last_cp_hash,
+            )
+            append_ledger_entry(ledger_path, cp)
 
         if blocked:
             sys.stderr.write(
-                f"\n[BIRKIN HARD BLOCK] {decision} in {latency_ms}ms\n"
-                f"  ├─ Tool: {payload.get('tool_name')}\n"
+                f"\n[RECEIPTD HARD BLOCK] {decision.upper()} in {latency_ms}ms\n"
+                f"  ├─ Tool: {tool_name}\n"
                 f"  ├─ Blast Score: {score}/100 ({', '.join(triggered)})\n"
-                f"  └─ Signed Receipt SHA-256: {receipt_hash[:24]}...\n"
+                f"  └─ Signed Receipt SHA-256: {receipt['hash'][:24]}...\n"
             )
             return 2  # Exit code 2 deterministically halts Claude Code tool execution
 
@@ -113,10 +194,9 @@ def main() -> int:
 
     except Exception as exc:
         # Fail-closed guarantee: any parser/IO error halts execution
-        sys.stderr.write(f"[BIRKIN FAIL-CLOSED EXCEPTION] Execution halted: {exc}\n")
+        sys.stderr.write(f"[RECEIPTD FAIL-CLOSED EXCEPTION] Execution halted: {exc}\n")
         return 2
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
