@@ -23,9 +23,9 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-KEY_DIR = Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
-PRIVATE_KEY_PATH = KEY_DIR / "receiptd_ed25519.pem"
-PUBLIC_KEY_PATH = KEY_DIR / "receiptd_ed25519.pub.pem"
+def _get_key_paths():
+    key_dir = Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+    return key_dir, key_dir / "receiptd_ed25519.pem", key_dir / "receiptd_ed25519.pub.pem"
 
 
 def _generate_key_pair():
@@ -35,24 +35,25 @@ def _generate_key_pair():
 
 def _load_or_create_key():
     """The process-wide Ed25519 private key (created on first use)."""
-    KEY_DIR.mkdir(parents=True, exist_ok=True)
+    key_dir, private_key_path, public_key_path = _get_key_paths()
+    key_dir.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(KEY_DIR, 0o700)
+        os.chmod(key_dir, 0o700)
     except OSError:
         pass
-    if PRIVATE_KEY_PATH.exists():
-        blob = PRIVATE_KEY_PATH.read_bytes()
+    if private_key_path.exists():
+        blob = private_key_path.read_bytes()
         return serialization.load_pem_private_key(blob, password=None)
     private = _generate_key_pair()
-    PRIVATE_KEY_PATH.write_bytes(
+    private_key_path.write_bytes(
         private.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         )
     )
-    os.chmod(PRIVATE_KEY_PATH, 0o600)
-    PUBLIC_KEY_PATH.write_bytes(
+    os.chmod(private_key_path, 0o600)
+    public_key_path.write_bytes(
         private.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -248,7 +249,7 @@ def write_signed_card(report, path) -> dict:
     return document
 
 
-def verify_card_file(path):
+def verify_card_file(path, expected_pubkey_id: str | None = None):
     """(ok, message). VALID iff the payload's canonical bytes verify under
     the embedded public key AND match the recorded digest."""
     import base64
@@ -266,6 +267,16 @@ def verify_card_file(path):
     digest_field = document.get("digest")
     if not signature_field or not public_key_field or not digest_field:
         return False, "TAMPERED (missing signature fields)"
+
+    from receiptd.crypto import get_pubkey_id
+
+    try:
+        actual_id = get_pubkey_id(public_key_field)
+    except Exception:
+        return False, "TAMPERED (invalid embedded public key)"
+
+    if expected_pubkey_id is not None and actual_id != expected_pubkey_id.strip():
+        return False, f"UNTRUSTED SIGNER (key {actual_id} != expected {expected_pubkey_id.strip()})"
 
     payload = {
         key: value

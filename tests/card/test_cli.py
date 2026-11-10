@@ -36,6 +36,9 @@ def test_cli_card_help():
 def test_cli_verify_card_help():
     result = runner.invoke(app, ["verify-card", "--help"])
     assert result.exit_code == 0
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "--pubkey-id" in clean
+    assert "--pubkey-file" in clean
 
 
 @pytest.fixture
@@ -146,3 +149,60 @@ def test_verify_card_missing_file():
     result = runner.invoke(app, ["verify-card", "/nonexistent/card.json"])
     assert result.exit_code == 1
     assert "TAMPERED" in result.stdout or "error" in result.stdout.lower()
+
+
+def test_verify_card_with_pubkey_id_match(run_card, tmp_path):
+    run_card("claude_basic.jsonl")
+    card_path = tmp_path / "card.json"
+    card_doc = json.loads(card_path.read_text())
+    from receiptd.crypto import get_pubkey_id
+
+    key_id = get_pubkey_id(card_doc["public_key"])
+
+    result = runner.invoke(app, ["verify-card", str(card_path), "--pubkey-id", key_id])
+    assert result.exit_code == 0
+    assert "VALID" in result.stdout
+
+
+def test_verify_card_with_pubkey_file_match(run_card, tmp_path):
+    run_card("claude_basic.jsonl")
+    card_path = tmp_path / "card.json"
+    card_doc = json.loads(card_path.read_text())
+    pub_file = tmp_path / "expected_signer.pem"
+    pub_file.write_text(card_doc["public_key"])
+
+    result = runner.invoke(app, ["verify-card", str(card_path), "--pubkey-file", str(pub_file)])
+    assert result.exit_code == 0
+    assert "VALID" in result.stdout
+
+
+def test_verify_card_resigned_with_fresh_key_in_temp_dir(run_card, tmp_path, monkeypatch):
+    run_card("claude_basic.jsonl")
+    card_path = tmp_path / "card.json"
+    card_doc = json.loads(card_path.read_text())
+    from receiptd.crypto import get_pubkey_id
+
+    original_id = get_pubkey_id(card_doc["public_key"])
+
+    # Re-sign the card with a fresh key in a temp RECEIPTD_KEY_DIR
+    fresh_keys_dir = tmp_path / "fresh_keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(fresh_keys_dir))
+
+    from receiptd.card.signing import sign_card_payload
+
+    payload = {k: v for k, v in card_doc.items() if k not in ("signature", "digest", "public_key")}
+    resigned_doc = sign_card_payload(payload)
+    fresh_id = get_pubkey_id(resigned_doc["public_key"])
+    assert fresh_id != original_id
+    card_path.write_text(json.dumps(resigned_doc))
+
+    # Without --pubkey-id, behavior is unchanged and passes
+    result_unpinned = runner.invoke(app, ["verify-card", str(card_path)])
+    assert result_unpinned.exit_code == 0
+    assert "VALID" in result_unpinned.stdout
+
+    # With --pubkey-id pinned to original key, fails with exit 1 and UNTRUSTED SIGNER
+    result_pinned = runner.invoke(app, ["verify-card", str(card_path), "--pubkey-id", original_id])
+    assert result_pinned.exit_code == 1
+    assert f"UNTRUSTED SIGNER (key {fresh_id} != expected {original_id})" in result_pinned.stdout
+

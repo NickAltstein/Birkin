@@ -285,3 +285,21 @@ def test_verify_missing_signature_fields(tmp_path):
     path.write_text(json.dumps({"verdict": {"level": "RED"}}))
     ok, message = verify_card_file(path)
     assert not ok and "TAMPERED" in message
+
+
+def test_verify_card_file_expected_pubkey_id(tmp_path):
+    path = _write_fresh_card(tmp_path)
+    doc = json.loads(path.read_text())
+    from receiptd.crypto import get_pubkey_id
+
+    key_id = get_pubkey_id(doc["public_key"])
+
+    ok, message = verify_card_file(path, expected_pubkey_id=key_id)
+    assert ok
+    assert "VALID" in message
+
+    wrong_id = "0" * 64
+    ok, message = verify_card_file(path, expected_pubkey_id=wrong_id)
+    assert not ok
+    assert message == f"UNTRUSTED SIGNER (key {key_id} != expected {wrong_id})"
+
