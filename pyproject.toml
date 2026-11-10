@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "receiptd"
 version = "1.0.0"
-description = "Cryptographic authorization receipts, sub-2ms fail-closed PreToolUse hooks, and offline hash-chain verification for autonomous AI agents."
+description = "Cryptographic authorization receipts, 0.02ms in-process policy checks (~67ms CLI hook), and offline hash-chain verification for autonomous AI agents."
 readme = "README.md"
 authors = [
     { name = "Nick Altstein", email = "nickaltstein@gmail.com" }
 ]
 license = { text = "MIT" }
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Topic :: Security :: Cryptography",
@@ -29,6 +29,7 @@ dependencies = [
     "pydantic>=2.5",
     "typer>=0.9",
     "pillow>=10.0.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,9 @@ birkin = "receiptd.cli:cli"
 
 [tool.setuptools.packages.find]
 include = ["receiptd*", "birkin*"]
+
+[tool.setuptools.package-data]
+"receiptd.card" = ["rules.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
