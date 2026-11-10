@@ -27,7 +27,21 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from . import __version__
-from .crypto import SigningKey
+from .crypto import (
+    SigningKey,
+    canonical_json,
+    canonical_json_subset,
+    get_public_key_pem,
+    get_pubkey_id,
+    get_signing_key,
+    merkle_root,
+    verify_ed25519,
+)
+from .ledger import (
+    CHECKPOINT_SIGNABLE_FIELDS,
+    GENESIS_HASH,
+    SIGNABLE_RECEIPT_FIELDS,
+)
 from .verify import render_report, verify_file
 
 app = typer.Typer(
@@ -48,8 +62,10 @@ def canonicalize_jcs(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def sha256_hex(data: str) -> str:
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+def sha256_hex(data: str | bytes) -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
 
 
 def compute_ascii_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -179,72 +195,193 @@ def init(
 
 
 # ---------------------------------------------------------------------------
+# Command: `receiptd pubkey`
+# ---------------------------------------------------------------------------
+
+@app.command("pubkey")
+def pubkey(
+    format: str = typer.Option("pem", "--format", "-f", help="Output format: pem, b64, or json"),
+    key_dir: Optional[str] = typer.Option(None, "--key-dir", help="Directory containing keys"),
+) -> None:
+    """Export the Receiptd Ed25519 public key."""
+    kd = Path(key_dir) if key_dir else None
+    sk = get_signing_key(key_dir=kd)
+    pub_pem = sk.public_pem_bytes.decode("ascii").strip()
+    pub_b64 = sk.public_b64
+    pub_id = get_pubkey_id(sk)
+
+    if format == "b64":
+        typer.echo(pub_b64)
+    elif format == "json":
+        typer.echo(json.dumps({"pubkey_id": pub_id, "public_b64": pub_b64, "public_pem": pub_pem}, indent=2))
+    else:
+        typer.echo(pub_pem)
+
+
+# ---------------------------------------------------------------------------
 # Command: `birkin verify --ledger` / `birkin verify <package>`
 # ---------------------------------------------------------------------------
 
-def _verify_ledger_file(ledger_path: Path, format_type: str = "table") -> bool:
+def _verify_ledger_file(
+    ledger_path: Path,
+    format_type: str = "table",
+    pubkey: Optional[str] = None,
+) -> bool:
     if not ledger_path.exists():
         typer.echo(f"Error: Ledger file not found at {ledger_path}", err=True)
         return False
 
     typer.echo(f"Auditing cryptographic ledger: {ledger_path}...\n")
 
-    receipts = []
+    entries = []
     with open(ledger_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             try:
-                receipts.append(json.loads(line))
+                entries.append(json.loads(line))
             except Exception as e:
                 typer.echo(f"[-] Malformed JSON on line {line_num}: {e}", err=True)
                 return False
 
-    if not receipts:
+    if not entries:
         typer.echo("Ledger is empty. No execution frames recorded.")
         return True
 
-    # Hash-Chain & Tamper Audit Loop
-    expected_prev_hash = "0" * 64
-    tamper_detected = False
-    tamper_index = -1
-    tamper_reason = ""
+    # Resolve public key for verifying Ed25519 signatures
+    pubkey_target = pubkey
+    if not pubkey_target:
+        pubkey_target = os.environ.get("RECEIPTD_PUBLIC_KEY")
+    if not pubkey_target:
+        try:
+            pubkey_target = get_public_key_pem()
+        except Exception:
+            pubkey_target = None
+
+    expected_prev_hash = GENESIS_HASH
+    expected_prev_cp_hash = GENESIS_HASH
+    receipts_by_seq: dict[int, dict] = {}
+    receipt_count = 0
+    checkpoint_count = 0
+    last_checkpointed_seq = 0
     table_rows = []
 
-    for idx, rec in enumerate(receipts):
-        stored_hash = rec.get("receipt_sha256", "")
-        stored_prev = rec.get("prev_receipt_hash", "")
+    tamper_detected = False
+    tamper_reason = ""
 
-        if stored_prev != expected_prev_hash:
-            tamper_detected = True
-            tamper_index = idx
-            tamper_reason = (
-                f"Hash Chain Break at Frame T+{idx}: "
-                f"Expected prev_hash {expected_prev_hash[:16]}..., got {stored_prev[:16]}..."
-            )
-            break
+    for idx, entry in enumerate(entries):
+        is_checkpoint = (entry.get("type") == "checkpoint")
 
-        rec_copy = dict(rec)
-        rec_copy.pop("receipt_sha256", None)
-        recomputed_hash = sha256_hex(canonicalize_jcs(rec_copy))
+        if is_checkpoint:
+            checkpoint_count += 1
+            from_seq = entry.get("from_seq", 0)
+            to_seq = entry.get("to_seq", 0)
+            stored_root = entry.get("merkle_root", "")
+            stored_prev_cp = entry.get("prev_checkpoint_hash", "")
+            stored_cp_hash = entry.get("hash") or entry.get("checkpoint_hash", "")
+            cp_sig = entry.get("sig", "")
 
-        if recomputed_hash != stored_hash:
-            tamper_detected = True
-            tamper_index = idx
-            tamper_reason = (
-                f"Payload Mutation Detected at Frame T+{idx}: "
-                f"Stored hash {stored_hash[:16]}... != Recomputed {recomputed_hash[:16]}... (1-byte ledger modification)"
-            )
-            break
+            # 1. Checkpoint hash chain
+            if stored_prev_cp != expected_prev_cp_hash:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Checkpoint Hash Chain Break at checkpoint #{checkpoint_count}: "
+                    f"Expected prev_checkpoint_hash {expected_prev_cp_hash[:16]}..., got {stored_prev_cp[:16]}..."
+                )
+                break
 
-        tool = rec.get("tool_name", "unknown")
-        decision = rec.get("decision", "UNKNOWN")
-        score = rec.get("blast_radius_score", 0)
-        latency = f"{rec.get('latency_ms', 0)}ms"
+            # 2. Checkpoint signature
+            if cp_sig and pubkey_target:
+                cp_signable = canonical_json_subset(entry, CHECKPOINT_SIGNABLE_FIELDS)
+                if not verify_ed25519(pubkey_target, cp_sig, cp_signable):
+                    tamper_detected = True
+                    tamper_reason = f"Invalid Ed25519 signature on checkpoint (range {from_seq}..{to_seq})"
+                    break
 
-        table_rows.append([f"T+{idx}", tool, decision, f"{score}/100", latency, stored_hash[:16] + "..."])
-        expected_prev_hash = stored_hash
+            # 3. Checkpoint Merkle root against receipts in range
+            range_hashes = []
+            missing = []
+            for s in range(from_seq, to_seq + 1):
+                if s in receipts_by_seq:
+                    range_hashes.append(receipts_by_seq[s]["hash"])
+                else:
+                    missing.append(s)
+
+            if missing:
+                tamper_detected = True
+                tamper_reason = f"Checkpoint range {from_seq}..{to_seq} references missing receipt sequence #{missing[0]}"
+                break
+
+            recomputed_root = merkle_root(range_hashes)
+            if recomputed_root != stored_root:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Checkpoint Merkle root mismatch for range {from_seq}..{to_seq}: "
+                    f"Stored {stored_root[:16]}... != Recomputed {recomputed_root[:16]}..."
+                )
+                break
+
+            # 4. Checkpoint record payload hash
+            cp_copy = {k: v for k, v in entry.items() if k not in ("hash", "checkpoint_hash")}
+            recomputed_cp_hash = sha256_hex(canonical_json(cp_copy))
+            if stored_cp_hash and recomputed_cp_hash != stored_cp_hash:
+                tamper_detected = True
+                tamper_reason = f"Checkpoint record mutation detected (range {from_seq}..{to_seq})"
+                break
+
+            expected_prev_cp_hash = stored_cp_hash or recomputed_cp_hash
+            last_checkpointed_seq = max(last_checkpointed_seq, to_seq)
+
+        else:
+            # Regular receipt
+            receipt_count += 1
+            seq = entry.get("seq", receipt_count)
+            stored_hash = entry.get("hash") or entry.get("receipt_sha256", "")
+            stored_prev = entry.get("prev_hash") or entry.get("prev_receipt_hash", "")
+            sig = entry.get("sig")
+            is_signing_error = bool(entry.get("signing_error", False))
+
+            # 1. Receipt Hash Chain
+            if stored_prev != expected_prev_hash:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Hash Chain Break at Frame sequence #{seq} (T+{receipt_count - 1}): "
+                    f"Expected prev_hash {expected_prev_hash[:16]}..., got {stored_prev[:16]}..."
+                )
+                break
+
+            # 2. Payload Mutation (hash integrity)
+            rec_copy = {k: v for k, v in entry.items() if k not in ("hash", "receipt_sha256")}
+            recomputed_hash = sha256_hex(canonical_json(rec_copy))
+            if stored_hash and recomputed_hash != stored_hash:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Payload Mutation Detected at Frame sequence #{seq} (T+{receipt_count - 1}): "
+                    f"Stored hash {stored_hash[:16]}... != Recomputed {recomputed_hash[:16]}..."
+                )
+                break
+
+            # 3. Signature verification
+            if sig:
+                if not pubkey_target:
+                    tamper_detected = True
+                    tamper_reason = f"Receipt at sequence #{seq} is signed but no public key available to verify signature"
+                    break
+                signable_bytes = canonical_json_subset(entry, SIGNABLE_RECEIPT_FIELDS)
+                if not verify_ed25519(pubkey_target, sig, signable_bytes):
+                    tamper_detected = True
+                    tamper_reason = f"Invalid Ed25519 signature at receipt sequence #{seq}"
+                    break
+
+            tool = entry.get("tool") or entry.get("tool_name", "unknown")
+            decision = entry.get("decision", "UNKNOWN")
+            score = entry.get("blast_radius") if entry.get("blast_radius") is not None else entry.get("blast_radius_score", 0)
+            latency = f"{entry.get('latency_ms', 0)}ms"
+
+            table_rows.append([f"Seq #{seq}", tool, decision, f"{score}/100", latency, (stored_hash or recomputed_hash)[:16] + "..."])
+            expected_prev_hash = stored_hash or recomputed_hash
+            receipts_by_seq[seq] = {"hash": stored_hash or recomputed_hash, "entry": entry}
 
     if format_type == "table" and table_rows:
         headers = ["Frame", "Tool Invocation", "Decision", "Blast Score", "Latency", "SHA-256 Receipt Fingerprint"]
@@ -255,19 +392,29 @@ def _verify_ledger_file(ledger_path: Path, format_type: str = "table") -> bool:
         typer.echo("=" * 65)
         typer.echo(f"✗ TAMPER DETECTED: {tamper_reason}")
         typer.echo("=" * 65)
-        typer.echo(f"Audit failed at frame index {tamper_index}. Ledger cryptographic integrity invalidated.")
+        typer.echo(f"Audit failed. Ledger cryptographic integrity invalidated.")
         return False
-    else:
-        typer.echo("=" * 65)
-        typer.echo(f"✓ VERDICT: AUTHENTIC — {len(receipts)} frames verified, 0 chain breaks.")
-        typer.echo("=" * 65)
-        return True
+
+    # Check for uncheckpointed tail
+    if last_checkpointed_seq < receipt_count and receipt_count > 0:
+        tail_start = last_checkpointed_seq + 1
+        typer.echo(
+            f"Warning: Uncheckpointed tail: receipts {tail_start} to {receipt_count} "
+            f"have not been sealed in a Merkle checkpoint. "
+            f"Missing receipts after the last checkpoint cannot be proven.\n"
+        )
+
+    typer.echo("=" * 65)
+    typer.echo(f"✓ VERDICT: AUTHENTIC — {receipt_count} receipts, {checkpoint_count} checkpoints verified, 0 chain breaks.")
+    typer.echo("=" * 65)
+    return True
 
 
 @app.command("verify")
 def verify(
     package: Optional[str] = typer.Argument(None, help="Path to a receiptd or birkin run package (.json)"),
     ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to the JSONL receipt ledger."),
+    pubkey: Optional[str] = typer.Option(None, "--pubkey", help="Path or string of Ed25519 public key for verification."),
     format: str = typer.Option("table", "--format", help="Output format: table or json"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print verdict only"),
 ) -> None:
@@ -279,7 +426,7 @@ def verify(
             ledger = ".birkin/receipts.jsonl"
 
     if ledger:
-        ok = _verify_ledger_file(Path(ledger), format_type=format)
+        ok = _verify_ledger_file(Path(ledger), format_type=format, pubkey=pubkey)
         if not ok:
             raise typer.Exit(code=2)
         return
