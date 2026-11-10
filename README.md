@@ -198,14 +198,14 @@ def execute_sql(query: str) -> list[dict]:
 
 ## Performance Benchmarks
 
-Measured on Apple M4 (macOS 15.3, Darwin 27.3.0, arm64), Python 3.11.16, on 2026-11-10 across 1,000 sequential tool call evaluations (`benchmarks/benchmark_overhead.py`):
+Measured on Apple M4 (macOS 27.3, Darwin 27.3.0, arm64), Python 3.11.16, on 2026-11-10 across 1,000 sequential tool call evaluations (`benchmarks/benchmark_overhead.py`):
 
 | Operation | Mean Latency | Tail Latency | External Network I/O |
 | :--- | :--- | :--- | :--- |
 | **AST & Policy Evaluation** | 0.005 ms | 0.008 ms (p99) | None |
 | **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.017 ms | 0.025 ms (p99) | None |
-| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.022 ms** | **0.040 ms (p99)** | **0 bytes (100% Local)** |
-| **Full Claude Code Hook Execution (Cold Python Process)** | **85.6 ms** | **96.1 ms (p95)** | **0 bytes (100% Local)** |
+| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.022 ms** | **0.031 ms (p99)** | **0 bytes (100% Local)** |
+| **Full Claude Code Hook Execution (Cold Python Process)** | **88.7 ms** | **104.6 ms (p95)** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *External API Required* |
 
 Run the benchmark locally: `python benchmarks/benchmark_overhead.py`
