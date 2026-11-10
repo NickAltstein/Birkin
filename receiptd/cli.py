@@ -147,6 +147,10 @@ def init(
                 {
                     "type": "command",
                     "command": f"python3 -m receiptd.hooks.claude_code_gate --policy {policy_path} --ledger .birkin/receipts.jsonl",
+                    # Seconds. Must stay above the gate's internal deadline
+                    # (RECEIPTD_HOOK_DEADLINE_MS, default 5000) so the gate
+                    # denies before Claude Code's timeout lets the call through.
+                    "timeout": 10,
                 }
             ],
         }

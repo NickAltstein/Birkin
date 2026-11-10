@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,98 @@ DEFAULT_RULES = [
     ("POL-02:DESTRUCTIVE_DDL_OR_FS", 90, re.compile(r"(\bDROP\s+TABLE\b|\bTRUNCATE\b|rm\s+-rf\s+[/~*]|mkfs|/etc/passwd)", re.I)),
     ("POL-03:PRIVILEGE_ESCALATION", 85, re.compile(r"(\bsudo\b|chmod\s+777|chown\s+root|\.claude/settings\.json)", re.I)),
 ]
+
+
+# Hook deadline. Claude Code lets the tool call through when a PreToolUse hook
+# times out, so the gate must decide (and exit 2) before that can happen.
+# Keep the deadline below the hook "timeout" written by `receiptd init`.
+DEFAULT_DEADLINE_MS = 5000
+MIN_DEADLINE_MS = 100
+MAX_DEADLINE_MS = 30000
+# After the deadline fires, the watchdog gets this long to write a deny
+# receipt before the process is killed with exit 2 regardless.
+DEADLINE_GRACE_S = 1.0
+
+# Held for every ledger write so the watchdog never cuts a write in half.
+_LEDGER_LOCK = threading.Lock()
+# What the watchdog needs to write a deny receipt. "finished" is set under
+# _LEDGER_LOCK in the same block as the final ledger write.
+_CTX: dict = {"finished": False}
+
+
+def resolve_deadline_ms(environ=None) -> int:
+    """Read RECEIPTD_HOOK_DEADLINE_MS, clamped. Bad values use the default."""
+    environ = os.environ if environ is None else environ
+    raw = environ.get("RECEIPTD_HOOK_DEADLINE_MS")
+    if raw is None:
+        return DEFAULT_DEADLINE_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_DEADLINE_MS
+    return max(MIN_DEADLINE_MS, min(MAX_DEADLINE_MS, value))
+
+
+def _resolve_ledger_path(argv: list[str]) -> str:
+    ledger_path = ".receiptd/receipts.jsonl"
+    for i, arg in enumerate(argv):
+        if arg == "--ledger" and i + 1 < len(argv):
+            ledger_path = argv[i + 1]
+            break
+    if not os.path.exists(ledger_path) and os.path.exists(".birkin/receipts.jsonl"):
+        ledger_path = ".birkin/receipts.jsonl"
+    return ledger_path
+
+
+def _write_deadline_receipt(deadline_ms: int) -> None:
+    """Append an unsigned deny receipt. Unsigned because key loading may be what hung."""
+    ledger_path = _CTX["ledger_path"]
+    prev_hash, _, receipt_count, _, _ = read_ledger_state(ledger_path)
+    tool_input = _CTX.get("tool_input", {})
+    receipt = build_unsigned_signing_error_receipt(
+        v=1,
+        seq=receipt_count + 1,
+        ts=datetime.now(timezone.utc).isoformat(),
+        session_id=_CTX.get("session_id", "default"),
+        tool=_CTX.get("tool_name", ""),
+        args_sha256=sha256_hex(canonical_json(tool_input)),
+        decision="deny",
+        rule_ids=["HOOK_DEADLINE_EXCEEDED"],
+        blast_radius=100,
+        reason=f"receiptd: hook deadline exceeded ({deadline_ms}ms)",
+        policy_sha256=_CTX.get("policy_sha256", ""),
+        prev_hash=prev_hash,
+        extra_fields={"latency_ms": deadline_ms, "tool_input": tool_input},
+    )
+    append_ledger_entry(ledger_path, receipt)
+
+
+def _on_deadline(deadline_ms: int) -> None:
+    """Watchdog: deny when the gate has not decided in time."""
+    killer = threading.Timer(DEADLINE_GRACE_S, os._exit, args=(2,))
+    killer.daemon = True
+    killer.start()
+    try:
+        if _LEDGER_LOCK.acquire(timeout=DEADLINE_GRACE_S / 2):
+            if _CTX["finished"]:
+                # The gate decided and recorded it just in time; let it return.
+                killer.cancel()
+                _LEDGER_LOCK.release()
+                return
+            sys.stderr.write(
+                f"[RECEIPTD FAIL-CLOSED] Hook exceeded {deadline_ms}ms deadline; denying.\n"
+            )
+            sys.stderr.flush()
+            if _CTX.get("ledger_path"):
+                _write_deadline_receipt(deadline_ms)
+        else:
+            sys.stderr.write(
+                f"[RECEIPTD FAIL-CLOSED] Hook exceeded {deadline_ms}ms deadline; denying.\n"
+            )
+            sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(2)
 
 
 def canonicalize_jcs(obj) -> str:
@@ -75,8 +168,25 @@ def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
 
 
 def main() -> int:
+    deadline_ms = resolve_deadline_ms()
+    _CTX.clear()
+    _CTX["finished"] = False
+    watchdog = threading.Timer(deadline_ms / 1000.0, _on_deadline, args=(deadline_ms,))
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        return _run()
+    finally:
+        if _LEDGER_LOCK.acquire(timeout=DEADLINE_GRACE_S):
+            _CTX["finished"] = True
+            _LEDGER_LOCK.release()
+        watchdog.cancel()
+
+
+def _run() -> int:
     t0 = time.perf_counter()
     try:
+        _CTX["ledger_path"] = _resolve_ledger_path(sys.argv)
         raw_stdin = sys.stdin.read()
         if not raw_stdin.strip():
             sys.stderr.write("[RECEIPTD FAIL-CLOSED] Empty stdin frame rejected.\n")
@@ -90,15 +200,7 @@ def main() -> int:
         decision = "deny" if blocked else "allow"
         reason = f"triggered rules: {', '.join(triggered)}" if blocked else "allowed"
 
-        # Resolve ledger path
-        ledger_path = ".receiptd/receipts.jsonl"
-        for i, arg in enumerate(sys.argv):
-            if arg == "--ledger" and i + 1 < len(sys.argv):
-                ledger_path = sys.argv[i + 1]
-                break
-
-        if not os.path.exists(ledger_path) and os.path.exists(".birkin/receipts.jsonl"):
-            ledger_path = ".birkin/receipts.jsonl"
+        ledger_path = _CTX["ledger_path"]
 
         # Checkpoint interval
         checkpoint_interval = 100
@@ -128,6 +230,12 @@ def main() -> int:
         tool_input = payload.get("tool_input", {})
         args_sha256 = sha256_hex(canonical_json(tool_input))
         session_id = str(payload.get("session_id") or os.environ.get("RECEIPTD_SESSION_ID", "default"))
+        _CTX.update(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            session_id=session_id,
+            policy_sha256=policy_sha256,
+        )
 
         # Read existing ledger state
         prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
@@ -155,7 +263,9 @@ def main() -> int:
                 prev_hash=prev_hash,
                 extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
             )
-            append_ledger_entry(ledger_path, unsigned_receipt)
+            with _LEDGER_LOCK:
+                append_ledger_entry(ledger_path, unsigned_receipt)
+                _CTX["finished"] = True
             sys.stderr.write("receiptd: signing unavailable\n")
             return 2
 
@@ -176,21 +286,25 @@ def main() -> int:
             prev_hash=prev_hash,
             extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
         )
-        append_ledger_entry(ledger_path, receipt)
+        # Receipt, checkpoint, and "finished" go in one locked block so the
+        # watchdog sees either nothing written or the whole decision.
+        with _LEDGER_LOCK:
+            append_ledger_entry(ledger_path, receipt)
 
-        # Write Merkle checkpoint if interval reached
-        uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
-        if len(uncheckpointed_hashes) >= checkpoint_interval:
-            from_seq = last_cp_seq + 1
-            to_seq = seq
-            cp = build_signed_checkpoint(
-                sk=sk,
-                from_seq=from_seq,
-                to_seq=to_seq,
-                leaf_hashes=uncheckpointed_hashes,
-                prev_checkpoint_hash=last_cp_hash,
-            )
-            append_ledger_entry(ledger_path, cp)
+            # Write Merkle checkpoint if interval reached
+            uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
+            if len(uncheckpointed_hashes) >= checkpoint_interval:
+                from_seq = last_cp_seq + 1
+                to_seq = seq
+                cp = build_signed_checkpoint(
+                    sk=sk,
+                    from_seq=from_seq,
+                    to_seq=to_seq,
+                    leaf_hashes=uncheckpointed_hashes,
+                    prev_checkpoint_hash=last_cp_hash,
+                )
+                append_ledger_entry(ledger_path, cp)
+            _CTX["finished"] = True
 
         if blocked:
             sys.stderr.write(
