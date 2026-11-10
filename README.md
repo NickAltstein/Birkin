@@ -16,9 +16,10 @@ Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail op
 
 Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger tamper detection directly in your browser:
 
-* **[Launch Interactive Blast-Radius Simulator → `auditgpt.ai`](https://auditgpt.ai)**
-* **[Exploit Deep-Link #1: Halted Production `DROP TABLE`](https://auditgpt.ai/?scenario=prod-drop-table&step=1)** — Inspect an intercepted `postgres.execute_sql` frame blocked fail-closed with a `90/100` blast-radius score.
-* **[Exploit Deep-Link #2: 1-Byte Ledger Tamper (`✗ TAMPER DETECTED`)](https://auditgpt.ai/?scenario=poisoned-pr&step=2&tamper=1)** — Watch how flipping a single byte in the historical tool log breaks the Ed25519 signature and SHA-256 Merkle root.
+* **[Launch Interactive Blast-Radius Simulator → `sandbox.auditgpt.ai`](https://sandbox.auditgpt.ai)**
+* **[Exploit Deep-Link #1: Halted Production `DROP TABLE`](https://sandbox.auditgpt.ai/?scenario=prod-drop-table&step=1)** — Inspect an intercepted `postgres.execute_sql` frame blocked fail-closed with a `90/100` blast-radius score.
+* **[Exploit Deep-Link #2: 1-Byte Ledger Tamper (`✗ TAMPER DETECTED`)](https://sandbox.auditgpt.ai/?scenario=poisoned-pr&step=2&tamper=1)** — Watch how flipping a single byte in the historical tool log breaks the Ed25519 signature and SHA-256 Merkle root.
+* **Platform Security**: [auditgpt.ai](https://auditgpt.ai) — Adversarial pre-merge stress testing & ASTI v1.1 CI/CD gate.
 
 > **45-Second Demo Walkthrough** — *Claude Code hits a poisoned PR → Birkin `PreToolUse` hook hard-blocks `.env` exfiltration in 1.1ms → Offline verifier flips from `AUTHENTIC` to `TAMPERED` on a 1-byte mutation.*
 

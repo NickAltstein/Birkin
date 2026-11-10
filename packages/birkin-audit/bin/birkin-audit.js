@@ -120,7 +120,7 @@ function main() {
     console.log(`\nTo initialize Birkin fail-closed governance hooks in this repo:`);
     console.log(`  ${ANSI.bold}pip install birkin && birkin init --claude-code${ANSI.reset}`);
     console.log(`\nOr test adversarial vectors in the live simulator:`);
-    console.log(`  ${ANSI.cyan}https://auditgpt.ai/?scenario=prod-drop-table&step=1${ANSI.reset}\n`);
+    console.log(`  ${ANSI.cyan}https://sandbox.auditgpt.ai/?scenario=prod-drop-table&step=1${ANSI.reset}\n`);
     process.exit(0);
   }
 
