@@ -1,0 +1,17 @@
+{
+  "name": "birkin-audit",
+  "version": "1.0.0",
+  "description": "Zero-dependency CLI scanner for MCP agent permissions and blast-radius scorecards",
+  "bin": {
+    "birkin-audit": "./bin/birkin-audit.js"
+  },
+  "author": "Nick Altstein",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "ai-security",
+    "agent-governance",
+    "blast-radius",
+    "auditgpt"
+  ]
+}
