@@ -1,6 +1,6 @@
 # Receiptd
 
-**Cryptographic authorization receipts, sub-2ms fail-closed PreToolUse hooks, and offline hash-chain verification for autonomous AI agents.**
+**Cryptographic authorization receipts, 0.02ms in-process policy checks (~67ms CLI hook), and offline hash-chain verification for autonomous AI agents.**
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
@@ -13,6 +13,31 @@ Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail op
 **Receiptd gates both ends: before each tool call and before the agent says it's done.**
 * **PreToolUse Gate (exit 2):** Evaluates payload context, secrets, and policy constraints before any shell or tool executes.
 * **Stop Gate (exit 2):** Deterministically prevents an autonomous agent from declaring task completion while tests fail, requiring passing test suites and appending a signed completion receipt.
+
+---
+
+## Trifecta Card
+
+**One line:** `receiptd card` reads your Claude Code / Codex session logs offline, classifies every tool call with deterministic rules, and answers one question — *did this session hit the lethal trifecta of private data + untrusted input + egress?* — as a colored terminal verdict, a shareable `card.png` / `card.svg`, and a signed `card.json` you can verify later.
+
+![Example Trifecta Card (RED)](docs/trifecta_example.png)
+
+**Quickstart:**
+
+```bash
+pip install git+https://github.com/NickAltstein/receiptd               # install receiptd
+receiptd card --session fixtures/trifecta_demo/red.jsonl              # try demo fixture (no real logs needed)
+receiptd verify-card card.json                                        # verify signature: VALID or TAMPERED
+```
+
+Without `--session`, `receiptd card` analyzes your most recent real session (`--last N` for more), reading `~/.claude/projects/**/*.jsonl` and `~/.codex/sessions/**/*.jsonl`. Add `--redact-paths` to hash every path component in the evidence, and `--out my.png` to choose where the card lands.
+
+**Honest limitations:**
+- The classifier is rule-based (glob patterns, command tokens, tool names in `receiptd/card/rules.yaml`) — it can miss obfuscated exfiltration, e.g. a base64 blob piped through `python -c`, renamed binaries, or data smuggled inside an allowlisted-looking command.
+- It only examines the tool calls actually present in the logs; sessions whose logs were deleted, truncated, or never flushed are invisible to it.
+- Egress classification of `WebFetch`-style tools is host-based and policy-driven; a malicious host behind an innocuous name will not be flagged.
+
+**Privacy statement:** `receiptd card` makes zero network calls — no telemetry, no lookups, nothing. It never reads or outputs file *contents* or prompt text; evidence records contain only tool names, filenames, hosts, timestamps and call indexes. `--redact-paths` additionally replaces filenames with keyed hash tokens. The Ed25519 signing key lives in `~/.receiptd/` (0600 permissions) on your machine only.
 
 ---
 

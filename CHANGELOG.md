@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0] - 2026-11-10
+
+### Added
+- Signed Trifecta Card pipeline (`receiptd.card`) with deterministic rule classifier (`rules.yaml`), session parser, redact engine, and 1200x630 social preview card renderer (`card.png`, `card.svg`, `card.json`).
+- `receiptd verify-card CARD.json` command: validates Ed25519 signature and JCS canonical digest; outputs `VALID (<verdict>)` or `TAMPERED (<reason>)`.
+- `receiptd stop-gate` command and Claude Code `Stop` hook: halts task completion with exit code 2 if tests fail, requiring signed completion receipts.
+- Demo fixtures for immediate verification without local session history (`fixtures/trifecta_demo/{red,yellow,green}.jsonl`).
+- Network isolation test verifying zero outbound network calls and zero file content or prompt leakage.
+
+### Changed
+- Replaced legacy regex-based trifecta scanner (`receiptd/trifecta.py`) with full `receiptd.card` pipeline.
+- Updated `receiptd card` command with `--session`, `--last`, `--out`, and `--redact-paths` flags.
+- Package classifier updated to `Development Status :: 4 - Beta`.
+- Updated benchmarks in package description to reflect measured 0.02ms in-process evaluation and ~67ms cold CLI hook latency.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added
