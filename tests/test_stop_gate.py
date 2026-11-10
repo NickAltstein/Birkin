@@ -18,13 +18,17 @@ def test_stop_gate_pass_records_receipt():
 
         assert os.path.exists(ledger)
         with open(ledger, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            assert len(lines) == 1
-            receipt = json.loads(lines[0])
+            lines = [json.loads(line) for line in f if line.strip()]
+            receipts = [line for line in lines if line.get("type") != "checkpoint"]
+            checkpoints = [line for line in lines if line.get("type") == "checkpoint"]
+            assert len(receipts) == 1
+            assert len(checkpoints) == 1
+            receipt = receipts[0]
             assert receipt["event_type"] == "STOP_GATE"
             assert receipt["decision"] == "ALLOWED_VERIFIED"
             assert receipt["test_exit_code"] == 0
             assert "receipt_sha256" in receipt
+            assert "sig" in receipt
 
 
 def test_stop_gate_fail_halts_with_exit_2():
@@ -36,12 +40,14 @@ def test_stop_gate_fail_halts_with_exit_2():
 
         assert os.path.exists(ledger)
         with open(ledger, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            assert len(lines) == 1
-            receipt = json.loads(lines[0])
+            lines = [json.loads(line) for line in f if line.strip()]
+            receipts = [line for line in lines if line.get("type") != "checkpoint"]
+            assert len(receipts) == 1
+            receipt = receipts[0]
             assert receipt["event_type"] == "STOP_GATE"
             assert receipt["decision"] == "BLOCKED_FAIL_CLOSED"
             assert receipt["test_exit_code"] != 0
+            assert "sig" in receipt
 
 
 def test_cli_stop_gate_command():
@@ -80,11 +86,12 @@ def test_stop_gate_active_under_cap_exits_2():
 
         with open(ledger, "r", encoding="utf-8") as f:
             lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 2
-        assert lines[0]["decision"] == "BLOCKED_FAIL_CLOSED"
-        assert lines[0]["retries"] == 1
-        assert lines[1]["decision"] == "BLOCKED_FAIL_CLOSED"
-        assert lines[1]["retries"] == 2
+        receipts = [line for line in lines if line.get("type") != "checkpoint"]
+        assert len(receipts) == 2
+        assert receipts[0]["decision"] == "BLOCKED_FAIL_CLOSED"
+        assert receipts[0]["retries"] == 1
+        assert receipts[1]["decision"] == "BLOCKED_FAIL_CLOSED"
+        assert receipts[1]["retries"] == 2
 
 
 def test_stop_gate_active_at_cap_exits_0_gave_up_receipt():
@@ -120,8 +127,11 @@ def test_stop_gate_active_at_cap_exits_0_gave_up_receipt():
 
         with open(ledger, "r", encoding="utf-8") as f:
             lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 3
-        gave_up_receipt = lines[2]
+        receipts = [line for line in lines if line.get("type") != "checkpoint"]
+        checkpoints = [line for line in lines if line.get("type") == "checkpoint"]
+        assert len(receipts) == 3
+        assert len(checkpoints) == 1
+        gave_up_receipt = receipts[2]
         assert gave_up_receipt["event_type"] == "STOP_GATE"
         assert gave_up_receipt["decision"] == "gave_up"
         assert gave_up_receipt["retries"] == 3
@@ -129,6 +139,7 @@ def test_stop_gate_active_at_cap_exits_0_gave_up_receipt():
         assert "test_output_sha256" in gave_up_receipt
         assert len(gave_up_receipt["test_output_sha256"]) == 64
         assert "receipt_sha256" in gave_up_receipt
+        assert "sig" in gave_up_receipt
 
 
 def test_stop_gate_stdin_json_parsing():
@@ -145,6 +156,9 @@ def test_stop_gate_stdin_json_parsing():
         assert code == 0
         with open(ledger, "r", encoding="utf-8") as f:
             lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["decision"] == "gave_up"
-        assert lines[0]["session_id"] == "sess-from-stdin"
+        receipts = [line for line in lines if line.get("type") != "checkpoint"]
+        checkpoints = [line for line in lines if line.get("type") == "checkpoint"]
+        assert len(receipts) == 1
+        assert len(checkpoints) == 1
+        assert receipts[0]["decision"] == "gave_up"
+        assert receipts[0]["session_id"] == "sess-from-stdin"
