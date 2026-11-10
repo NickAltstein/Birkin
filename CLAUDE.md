@@ -51,6 +51,7 @@ pytest -q -rs
 * `migrations/`, `systemd/`, `nginx/`, `deploy.sh`, `install*.sh` (deployment surface).
 * Removing or renaming the `birkin` alias.
 * Anything under `bench/mcpvenom/` that would vendor, modify, or import mcpvenom code (license forbids it).
+* `birkin/` is a compatibility shim only; never add code there, edit `receiptd/`.
 
 ## Git
 
