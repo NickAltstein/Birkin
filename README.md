@@ -1,14 +1,14 @@
-# BIRKIN
+# AgentReceipts
 
-**The Open Agent Authorization & Evidence Layer — Sub-2ms Fail-Closed Hooks, Ed25519 Execution Receipts, and Offline Tamper Verification.**
+**Cryptographic authorization receipts, sub-2ms fail-closed PreToolUse hooks, and offline hash-chain verification for autonomous AI agents.**
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
 [![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_RFC--8785-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
-[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAiNYC/Birkin/actions)
+[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAiNYC/agent-receipts/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Birkin** enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **AgentReceipts** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
 
 ---
 
@@ -42,7 +42,7 @@ Do not rely on advisory `SKILL.md` prompts that an injected LLM can ignore. Inst
 
 ```bash
 # Wires .claude/settings.json PreToolUse hooks + installs /birkin-audit verifier skill
-pip install birkin && birkin init --claude-code
+pip install agent-receipts && agent-receipts init --claude-code
 ```
 
 Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Birkin evaluates the canonicalized JSON-RPC payload outside the model before execution:
@@ -57,7 +57,7 @@ Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Birki
 Verify the cryptographic integrity of any agent session offline:
 
 ```bash
-$ birkin verify --ledger .birkin/receipts.jsonl --format table
+$ agent-receipts verify --ledger .birkin/receipts.jsonl --format table
 ┌────────────────────────┬──────────────────────────────────────────┐
 │ Total Frames Verified  │ 18                                       │
 │ Blocked Fail-Closed    │ 3                                        │
