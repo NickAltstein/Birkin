@@ -62,7 +62,16 @@ $ receiptd verify --ledger .birkin/receipts.jsonl --format table
 │ Total Frames Verified  │ 18                                       │
 │ Blocked Fail-Closed    │ 3                                        │
 │ Hash Chain Verdict     │ AUTHENTIC (Ed25519 / SHA-256 Valid)      │
+│ 0 Tampered Frames      │ Verified offline in 0.42ms               │
 └────────────────────────┴──────────────────────────────────────────┘
+```
+
+### Test Against the Vulnerable Agent Fixture
+
+Simulate an autonomous agent under prompt injection attempting `.env` exfiltration and destructive DDL mutations outside the model runtime:
+
+```bash
+python3 fixtures/vulnerable_agent.py
 ```
 
 ---
