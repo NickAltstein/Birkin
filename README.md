@@ -1,14 +1,14 @@
-# AgentReceipts
+# Receiptd
 
 **Cryptographic authorization receipts, sub-2ms fail-closed PreToolUse hooks, and offline hash-chain verification for autonomous AI agents.**
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
 [![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_RFC--8785-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
-[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/agent-receipts/actions)
+[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **AgentReceipts** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
 
 ---
 
@@ -42,7 +42,7 @@ Do not rely on advisory `SKILL.md` prompts that an injected LLM can ignore. Inst
 
 ```bash
 # Wires .claude/settings.json PreToolUse hooks + installs /birkin-audit verifier skill
-pip install agent-receipts && agent-receipts init --claude-code
+pip install git+https://github.com/NickAltstein/receiptd && receiptd init --claude-code
 ```
 
 Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Birkin evaluates the canonicalized JSON-RPC payload outside the model before execution:
@@ -57,7 +57,7 @@ Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Birki
 Verify the cryptographic integrity of any agent session offline:
 
 ```bash
-$ agent-receipts verify --ledger .birkin/receipts.jsonl --format table
+$ receiptd verify --ledger .birkin/receipts.jsonl --format table
 ┌────────────────────────┬──────────────────────────────────────────┐
 │ Total Frames Verified  │ 18                                       │
 │ Blocked Fail-Closed    │ 3                                        │
@@ -143,7 +143,7 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 | :--- | :--- | :--- | :--- | :--- |
 | **AST & Policy-as-Code Evaluation** | 0.004 ms | 0.008 ms | < 1.0 MB | None |
 | **RFC-8785 Canonicalization + Ed25519 Signature** | 0.016 ms | 0.031 ms | < 1.5 MB | None |
-| **Total AgentReceipts Interceptor Overhead** | **0.020 ms** | **0.039 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| **Total Receiptd Interceptor Overhead** | **0.020 ms** | **0.039 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
 
 Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`

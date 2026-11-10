@@ -61,8 +61,19 @@ def main() -> int:
         blocked, score, triggered = evaluate_payload(payload)
         decision = "BLOCKED_FAIL_CLOSED" if blocked else "ALLOWED_VERIFIED"
 
-        os.makedirs(".birkin", exist_ok=True)
+        # Default to .birkin/receipts.jsonl for backward compatibility, optionally support .receiptd/
         ledger_path = ".birkin/receipts.jsonl"
+        for i, arg in enumerate(sys.argv):
+            if arg == "--ledger" and i + 1 < len(sys.argv):
+                ledger_path = sys.argv[i + 1]
+                break
+
+        if not os.path.exists(ledger_path) and os.path.exists(".receiptd/receipts.jsonl"):
+            ledger_path = ".receiptd/receipts.jsonl"
+
+        ledger_dir = os.path.dirname(ledger_path)
+        if ledger_dir:
+            os.makedirs(ledger_dir, exist_ok=True)
 
         prev_hash = "0" * 64
         if os.path.exists(ledger_path):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AgentReceipts: Reproducible Critical-Path Overhead Benchmark
+Receiptd: Reproducible Critical-Path Overhead Benchmark
 Measures:
   1. AST & regex policy evaluation (`evaluate_payload`)
   2. RFC-8785 JCS canonicalization (`canonicalize_jcs`)
@@ -11,8 +11,8 @@ import json
 import statistics
 import time
 from pathlib import Path
-from agent_receipts.hooks.claude_code_gate import evaluate_payload, canonicalize_jcs, sha256_hex
-from agent_receipts.crypto import SigningKey
+from receiptd.hooks.claude_code_gate import evaluate_payload, canonicalize_jcs, sha256_hex
+from receiptd.crypto import SigningKey
 
 
 def run_benchmark(n_iterations: int = 1000) -> dict:
@@ -65,8 +65,9 @@ def run_benchmark(n_iterations: int = 1000) -> dict:
 
 if __name__ == "__main__":
     res = run_benchmark(1000)
-    print("AgentReceipts Critical Path Benchmark Results:")
+    print("Receiptd Critical Path Benchmark Results:")
     print(f"  Iterations: {res['n_samples']}")
     print(f"  Policy Evaluation Mean: {res['policy_eval_mean_ms']} ms")
     print(f"  Crypto & Ed25519 Mean:  {res['crypto_sign_mean_ms']} ms")
     print(f"  Total Overhead Mean:    {res['total_overhead_mean_ms']} ms (p99: {res['p99_ms']} ms)")
+

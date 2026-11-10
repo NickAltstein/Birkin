@@ -31,8 +31,8 @@ from .crypto import SigningKey
 from .verify import render_report, verify_file
 
 app = typer.Typer(
-    name="agent-receipts",
-    help="AgentReceipts — Cryptographic authorization receipts & fail-closed PreToolUse hooks.",
+    name="receiptd",
+    help="Receiptd — Cryptographic authorization receipts & fail-closed PreToolUse hooks.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -72,12 +72,12 @@ def compute_ascii_table(headers: list[str], rows: list[list[str]]) -> str:
 
 @app.command()
 def version() -> None:
-    """Print the Birkin version."""
-    typer.echo(f"birkin {__version__}")
+    """Print the Receiptd version."""
+    typer.echo(f"receiptd {__version__}")
 
 
 # ---------------------------------------------------------------------------
-# Command: `birkin init --claude-code`
+# Command: `receiptd init --claude-code`
 # ---------------------------------------------------------------------------
 
 @app.command("init")
@@ -85,8 +85,8 @@ def init(
     claude_code: bool = typer.Option(True, "--claude-code", help="Wire .claude/settings.json PreToolUse hook gate."),
     policy_path: str = typer.Option(".birkin/strict.yaml", "--policy-path", help="Path to fail-closed policy configuration."),
 ) -> None:
-    """Initialize Birkin runtime hooks and audit structures in the local repository."""
-    typer.echo("Initializing AgentReceipts Zero-Trust Agent Firewall...")
+    """Initialize Receiptd runtime hooks and audit structures in the local repository."""
+    typer.echo("Initializing Receiptd Zero-Trust Agent Firewall...")
 
     os.makedirs(".birkin", exist_ok=True)
 
@@ -130,7 +130,7 @@ def init(
             "hooks": [
                 {
                     "type": "command",
-                    "command": f"python3 -m birkin.hooks.claude_code_gate --policy {policy_path} --ledger .birkin/receipts.jsonl",
+                    "command": f"python3 -m receiptd.hooks.claude_code_gate --policy {policy_path} --ledger .birkin/receipts.jsonl",
                 }
             ],
         }
@@ -249,12 +249,18 @@ def _verify_ledger_file(ledger_path: Path, format_type: str = "table") -> bool:
 
 @app.command("verify")
 def verify(
-    package: Optional[str] = typer.Argument(None, help="Path to a birkin run package (.json)"),
+    package: Optional[str] = typer.Argument(None, help="Path to a receiptd or birkin run package (.json)"),
     ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to the JSONL receipt ledger."),
     format: str = typer.Option("table", "--format", help="Output format: table or json"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print verdict only"),
 ) -> None:
     """Audit the append-only SHA-256 hash chain and perform cryptographic tamper diffing."""
+    if not ledger and not package:
+        if Path(".receiptd/receipts.jsonl").exists():
+            ledger = ".receiptd/receipts.jsonl"
+        elif Path(".birkin/receipts.jsonl").exists():
+            ledger = ".birkin/receipts.jsonl"
+
     if ledger:
         ok = _verify_ledger_file(Path(ledger), format_type=format)
         if not ok:
