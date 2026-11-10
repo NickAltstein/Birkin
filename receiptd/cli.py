@@ -41,6 +41,7 @@ from .ledger import (
     CHECKPOINT_SIGNABLE_FIELDS,
     GENESIS_HASH,
     SIGNABLE_RECEIPT_FIELDS,
+    read_ledger_anchor,
 )
 from .verify import render_report, verify_file
 
@@ -230,12 +231,18 @@ def _verify_ledger_file(
     ledger_path: Path,
     format_type: str = "table",
     pubkey: Optional[str] = None,
+    allow_unanchored: bool = False,
+    key_dir: Optional[Path] = None,
 ) -> bool:
     if not ledger_path.exists():
         typer.echo(f"Error: Ledger file not found at {ledger_path}", err=True)
         return False
 
     typer.echo(f"Auditing cryptographic ledger: {ledger_path}...\n")
+
+    anchor = None
+    if not allow_unanchored:
+        anchor = read_ledger_anchor(ledger_path=ledger_path, key_dir=key_dir)
 
     entries = []
     with open(ledger_path, "r", encoding="utf-8") as f:
@@ -250,6 +257,12 @@ def _verify_ledger_file(
                 return False
 
     if not entries:
+        if anchor and anchor[0] > 0:
+            typer.echo("=" * 65)
+            typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor[0]}")
+            typer.echo("=" * 65)
+            typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
+            return False
         typer.echo("Ledger is empty. No execution frames recorded.")
         return True
 
@@ -405,6 +418,23 @@ def _verify_ledger_file(
         typer.echo(compute_ascii_table(headers, table_rows))
         typer.echo()
 
+    if not tamper_detected and anchor:
+        anchor_seq, anchor_hash = anchor
+        if receipt_count < anchor_seq:
+            tamper_detected = True
+            tamper_reason = (
+                f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
+                f"but recorded state expects sequence #{anchor_seq}"
+            )
+        elif anchor_seq in receipts_by_seq:
+            actual_hash = receipts_by_seq[anchor_seq]["hash"]
+            if actual_hash != anchor_hash:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
+                    f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                )
+
     if tamper_detected:
         typer.echo("=" * 65)
         typer.echo(f"✗ TAMPER DETECTED: {tamper_reason}")
@@ -433,6 +463,7 @@ def verify(
     package: Optional[str] = typer.Argument(None, help="Path to a receiptd or birkin run package (.json)"),
     ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to the JSONL receipt ledger."),
     pubkey: Optional[str] = typer.Option(None, "--pubkey", help="Path or string of Ed25519 public key for verification."),
+    allow_unanchored: bool = typer.Option(False, "--allow-unanchored", help="Allow verification without comparing against local recorded anchor state."),
     format: str = typer.Option("table", "--format", help="Output format: table or json"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print verdict only"),
 ) -> None:
@@ -444,7 +475,7 @@ def verify(
             ledger = ".birkin/receipts.jsonl"
 
     if ledger:
-        ok = _verify_ledger_file(Path(ledger), format_type=format, pubkey=pubkey)
+        ok = _verify_ledger_file(Path(ledger), format_type=format, pubkey=pubkey, allow_unanchored=allow_unanchored)
         if not ok:
             raise typer.Exit(code=2)
         return

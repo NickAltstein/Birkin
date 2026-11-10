@@ -239,3 +239,64 @@ def append_ledger_entry(ledger_path: str | Path, entry: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(canonical_json(entry).decode("utf-8") + "\n")
+
+
+def record_ledger_anchor(
+    seq: int,
+    r_hash: str,
+    ledger_path: str | Path | None = None,
+    key_dir: Path | None = None,
+) -> None:
+    """Record the highest sequence number and hash in the local state store under RECEIPTD_KEY_DIR."""
+    kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+    try:
+        kd.mkdir(parents=True, exist_ok=True)
+        state_file = kd / "ledger_state.json"
+        data: dict[str, Any] = {}
+        if state_file.exists():
+            try:
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data["last_seq"] = int(seq)
+        data["last_hash"] = str(r_hash)
+        if ledger_path:
+            norm = str(Path(ledger_path).resolve())
+            data["ledger_path"] = norm
+            if "ledgers" not in data or not isinstance(data["ledgers"], dict):
+                data["ledgers"] = {}
+            data["ledgers"][norm] = {"last_seq": int(seq), "last_hash": str(r_hash)}
+        state_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.chmod(state_file, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def read_ledger_anchor(
+    ledger_path: str | Path | None = None,
+    key_dir: Path | None = None,
+) -> tuple[int, str] | None:
+    """Read the last recorded sequence number and hash from local state under RECEIPTD_KEY_DIR."""
+    kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+    for name in ("ledger_state.json", "state.json"):
+        state_file = kd / name
+        if state_file.exists():
+            try:
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                if ledger_path:
+                    norm = str(Path(ledger_path).resolve())
+                    ledgers = data.get("ledgers", {})
+                    if isinstance(ledgers, dict) and norm in ledgers:
+                        rec = ledgers[norm]
+                        return int(rec["last_seq"]), str(rec["last_hash"])
+                    if "ledger_path" in data and data["ledger_path"] != norm:
+                        return None
+                if "last_seq" in data and "last_hash" in data:
+                    return int(data["last_seq"]), str(data["last_hash"])
+            except Exception:
+                pass
+    return None
+

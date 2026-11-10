@@ -34,6 +34,7 @@ from ..ledger import (
     build_signed_receipt,
     build_unsigned_signing_error_receipt,
     read_ledger_state,
+    record_ledger_anchor,
 )
 
 
@@ -223,6 +224,7 @@ def run_stop_gate(
                 extra_fields=extra,
             )
             append_ledger_entry(ledger_path, receipt)
+            record_ledger_anchor(receipt["seq"], receipt["hash"])
             sys.stderr.write("receiptd: signing unavailable\n")
             return 2
 
@@ -243,6 +245,7 @@ def run_stop_gate(
             extra_fields=extra,
         )
         append_ledger_entry(ledger_path, receipt)
+        record_ledger_anchor(receipt["seq"], receipt["hash"])
 
         # Seal ledger with signed Merkle checkpoint at session completion
         uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
@@ -307,6 +310,7 @@ def run_stop_gate(
             extra_fields=extra,
         )
         append_ledger_entry(ledger_path, receipt)
+        record_ledger_anchor(receipt["seq"], receipt["hash"])
         sys.stderr.write("receiptd: signing unavailable\n")
         return 2
 
@@ -327,6 +331,7 @@ def run_stop_gate(
         extra_fields=extra,
     )
     append_ledger_entry(ledger_path, receipt)
+    record_ledger_anchor(receipt["seq"], receipt["hash"])
 
     if is_gave_up:
         # Seal ledger with signed Merkle checkpoint on give-up

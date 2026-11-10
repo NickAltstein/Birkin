@@ -36,8 +36,9 @@ def _recompute_hash(entry: dict) -> dict:
     return entry
 
 
-def test_strip_sig_from_signed_receipt_fails_verify(tmp_path: Path):
+def test_strip_sig_from_signed_receipt_fails_verify(tmp_path: Path, monkeypatch):
     """1. Strip sig from a signed receipt and re-hash the chain -> exit 2 naming seq."""
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(tmp_path / "keys"))
     ledger = tmp_path / "receipts.jsonl"
     sk = SigningKey.generate()
 
@@ -69,8 +70,9 @@ def test_strip_sig_from_signed_receipt_fails_verify(tmp_path: Path):
     assert "missing Ed25519 signature" in result.output
 
 
-def test_rewrite_deny_as_allow_no_sig_fails_verify(tmp_path: Path):
+def test_rewrite_deny_as_allow_no_sig_fails_verify(tmp_path: Path, monkeypatch):
     """2. Rewrite a deny as an allow with no sig and a re-hashed chain -> exit 2."""
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(tmp_path / "keys"))
     ledger = tmp_path / "receipts.jsonl"
     sk = SigningKey.generate()
 
@@ -106,8 +108,9 @@ def test_rewrite_deny_as_allow_no_sig_fails_verify(tmp_path: Path):
     assert "TAMPER DETECTED" in result.output
 
 
-def test_unsigned_signing_error_deny_accepted(tmp_path: Path):
+def test_unsigned_signing_error_deny_accepted(tmp_path: Path, monkeypatch):
     """3. Unsigned signing_error deny -> exit 0 with accepted count printed."""
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(tmp_path / "keys"))
     ledger = tmp_path / "receipts.jsonl"
     sk = SigningKey.generate()
 
@@ -134,8 +137,9 @@ def test_unsigned_signing_error_deny_accepted(tmp_path: Path):
     assert "Unsigned deny receipts accepted: 1" in result.output
 
 
-def test_unsigned_signing_error_allow_fails_verify(tmp_path: Path):
+def test_unsigned_signing_error_allow_fails_verify(tmp_path: Path, monkeypatch):
     """4. Unsigned signing_error allow -> exit 2 naming seq."""
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(tmp_path / "keys"))
     ledger = tmp_path / "receipts.jsonl"
     sk = SigningKey.generate()
 
