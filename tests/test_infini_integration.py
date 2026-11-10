@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from birkin.adapters.infini_gateway import InfiniActionGateway
-from birkin import verify_package
+from receiptd.adapters.infini_gateway import InfiniActionGateway
+from receiptd import verify_package
 
 
 def test_infini_gateway_allows_sandbox_step():

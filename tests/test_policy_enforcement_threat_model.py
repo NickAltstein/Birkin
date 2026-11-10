@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import pytest
 
-from birkin import (
+from receiptd import (
     Engine,
     NullAgentAdapter,
     SigningKey,

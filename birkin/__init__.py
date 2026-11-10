@@ -1,76 +1,81 @@
 """
-birkin
-======
+birkin compatibility shim
+=========================
 
-Birkin — the open Agent Authorization & Evidence Layer.
-
-Runtime-agnostic control plane for autonomous agents:
-signed authorization receipts, a verifiable audit ledger with Merkle
-checkpoints, and offline verification of exported run packages.
+Backward-compatibility shim re-exporting `receiptd` and mapping its
+submodules (e.g. `birkin.crypto`, `birkin.verify`, `birkin.adapters`) via `sys.modules`.
 """
 
-from .crypto import SigningKey, verify_signature, canonical_json, sha256_hex, merkle_root
-from .models import (
-    AgentIdentity,
-    AuthorizationReceipt,
-    AuditEvent,
-    MerkleCheckpoint,
-    PolicyDecision,
-    RunPackage,
-    PACKAGE_MANIFEST,
-    VerificationReport,
-    CheckResult,
-    make_passport,
-)
-from .policy import PolicySpec, load_default_policy, DEFAULT_POLICY_PATH
-from .adapter import AgentAdapter, BaseAdapter, Intent, ActionRequest, ActionResult
-from .adapters.hermes import HermesAdapter
-from .adapters.null_agent import NullAgentAdapter
-from .adapters.grok_bot import GrokBotAdapter
-from .audit import AuditLedger, GENESIS_HASH
-from .engine import Engine
-from .verify import (
-    verify_package,
-    verify_file,
-    load_run_package,
-    render_report,
-)
+import importlib
+import pkgutil
+import sys
 
-__version__ = "0.2.0"
+import receiptd
+from receiptd import *  # noqa: F401, F403
 
-__all__ = [
-    "SigningKey",
-    "verify_signature",
-    "canonical_json",
-    "sha256_hex",
-    "merkle_root",
-    "AgentIdentity",
-    "AuthorizationReceipt",
-    "AuditEvent",
-    "MerkleCheckpoint",
-    "PolicyDecision",
-    "RunPackage",
-    "PACKAGE_MANIFEST",
-    "VerificationReport",
-    "CheckResult",
-    "make_passport",
-    "PolicySpec",
-    "load_default_policy",
-    "DEFAULT_POLICY_PATH",
-    "AgentAdapter",
-    "BaseAdapter",
-    "Intent",
-    "ActionRequest",
-    "ActionResult",
-    "HermesAdapter",
-    "NullAgentAdapter",
-    "GrokBotAdapter",
-    "AuditLedger",
-    "GENESIS_HASH",
-    "Engine",
-    "verify_package",
-    "verify_file",
-    "load_run_package",
-    "render_report",
-    "__version__",
-]
+__all__ = getattr(receiptd, "__all__", [k for k in dir(receiptd) if not k.startswith("_")])
+__version__ = getattr(receiptd, "__version__", "1.0.0")
+
+_this_module = sys.modules[__name__]
+
+
+def _map_submodules() -> None:
+    prefix = receiptd.__name__ + "."
+    for mod_info in pkgutil.walk_packages(receiptd.__path__, prefix):
+        sub_name = mod_info.name[len(prefix):]
+        try:
+            target_mod = importlib.import_module(mod_info.name)
+        except Exception:
+            continue
+
+        birkin_mod_name = f"birkin.{sub_name}"
+        sys.modules[birkin_mod_name] = target_mod
+
+        # Attach to parent package in the birkin module tree
+        parts = sub_name.split(".")
+        current = _this_module
+        for part in parts[:-1]:
+            current = getattr(current, part, None)
+            if current is None:
+                break
+        if current is not None:
+            setattr(current, parts[-1], target_mod)
+
+
+_map_submodules()
+
+
+class _BirkinShimFinder:
+    """MetaPathFinder fallback to dynamically map any birkin.* import to receiptd.*"""
+
+    @classmethod
+    def find_spec(cls, fullname, path=None, target=None):
+        if fullname.startswith("birkin."):
+            sub = fullname[len("birkin."):]
+            target_name = f"receiptd.{sub}"
+            try:
+                mod = importlib.import_module(target_name)
+                sys.modules[fullname] = mod
+                return mod.__spec__
+            except ModuleNotFoundError:
+                return None
+        return None
+
+
+if _BirkinShimFinder not in sys.meta_path:
+    sys.meta_path.insert(0, _BirkinShimFinder)
+
+
+def __getattr__(name: str):
+    """Fallback attribute lookup delegating to receiptd."""
+    if hasattr(receiptd, name):
+        val = getattr(receiptd, name)
+        setattr(_this_module, name, val)
+        return val
+    try:
+        mod = importlib.import_module(f"receiptd.{name}")
+        sys.modules[f"birkin.{name}"] = mod
+        setattr(_this_module, name, mod)
+        return mod
+    except ModuleNotFoundError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import (
+from receiptd import (
     Engine,
     PolicySpec,
     SigningKey,
@@ -29,8 +29,8 @@ from birkin import (
     render_report,
     verify_package,
 )
-from birkin.adapters.grok_bot import GrokBotAdapter
-from birkin.verify import load_run_package
+from receiptd.adapters.grok_bot import GrokBotAdapter
+from receiptd.verify import load_run_package
 
 
 def main() -> None:

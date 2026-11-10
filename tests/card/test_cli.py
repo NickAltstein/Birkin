@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,10 @@ def test_cli_requires_command():
 def test_cli_card_help():
     result = runner.invoke(app, ["card", "--help"])
     assert result.exit_code == 0
-    assert "--session" in result.stdout or "-s" in result.stdout
-    assert "--out" in result.stdout
-    assert "--redact-paths" in result.stdout
+    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
+    assert "--session" in clean or "-s" in clean
+    assert "--out" in clean or "-o" in clean
+    assert "--redact-paths" in clean
 
 
 def test_cli_verify_card_help():

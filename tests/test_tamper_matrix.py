@@ -51,8 +51,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import Engine, HermesAdapter, SigningKey, load_default_policy, verify_package
-from birkin.verify import _coerce_package
+from receiptd import Engine, HermesAdapter, SigningKey, load_default_policy, verify_package
+from receiptd.verify import _coerce_package
 
 
 # --------------------------------------------------------------------------- #
@@ -124,7 +124,7 @@ def test_attack_b_identity_rewrite(clean_pkg_dict):
     ident["public_key"] = new_sk.public_b64
     # Re-sign only the identity (with the new key), but leave every event's
     # 'actor' and every receipt's 'agent_id' pointing at the old agent_id.
-    from birkin.models import AgentIdentity
+    from receiptd.models import AgentIdentity
     new_ident = AgentIdentity(**ident)
     new_ident.sign(new_sk)
     d["identity"] = json.loads(new_ident.model_dump_json(by_alias=True))
@@ -243,7 +243,7 @@ def test_print_tamper_matrix(clean_pkg_dict, capsys):
     new_sk = SigningKey.generate()
     ident = d["identity"]
     ident["public_key"] = new_sk.public_b64
-    from birkin.models import AgentIdentity
+    from receiptd.models import AgentIdentity
     new_ident = AgentIdentity(**ident); new_ident.sign(new_sk)
     d["identity"] = json.loads(new_ident.model_dump_json(by_alias=True))
     r = _verify(d); rows.append(("B. identity rewrite", r, "Identity/Signature/Receipt"))

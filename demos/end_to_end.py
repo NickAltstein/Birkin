@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import (  # noqa: E402
+from receiptd import (  # noqa: E402
     Engine,
     HermesAdapter,
     PolicySpec,
@@ -136,7 +136,7 @@ def run_demo(
     with open(package_path, "r", encoding="utf-8") as fh:
         pkg = json.load(fh)
     # Use the loader to coerce into models.
-    from birkin.verify import load_run_package
+    from receiptd.verify import load_run_package
     pkg_obj = load_run_package(package_path)
     report = verify_package(pkg_obj)
 

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import (
+from receiptd import (
     Engine,
     NullAgentAdapter,
     SigningKey,
@@ -86,7 +86,7 @@ def test_null_agent_and_hermes_produce_compatible_packages():
     audit event schema, and the checkpoint schema are identical regardless
     of which adapter produced them.
     """
-    from birkin import HermesAdapter
+    from receiptd import HermesAdapter
 
     results = []
     for AdapterCls, tool, args in [

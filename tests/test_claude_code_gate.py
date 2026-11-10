@@ -1,12 +1,12 @@
 import json
 import pytest
 from pathlib import Path
-from birkin.hooks.claude_code_gate import (
+from receiptd.hooks.claude_code_gate import (
     evaluate_payload,
     canonicalize_jcs,
     sha256_hex,
 )
-from birkin.cli import _verify_ledger_file
+from receiptd.cli import _verify_ledger_file
 
 
 def test_evaluate_payload_blocks_env_exfil():

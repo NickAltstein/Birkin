@@ -52,7 +52,7 @@ fi
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
 run_birkin() {
-  "$PYTHON_EXEC" -m birkin.cli "$@"
+  "$PYTHON_EXEC" -m receiptd.cli "$@"
 }
 
 # 2. Isolated temporary workspace for demonstration artifacts

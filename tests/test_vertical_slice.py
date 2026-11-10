@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import (
+from receiptd import (
     AgentIdentity,
     AuthorizationReceipt,
     AuditEvent,
@@ -40,8 +40,8 @@ from birkin import (
     sha256_hex,
     verify_package,
 )
-from birkin.crypto import canonical_json, canonical_json_subset
-from birkin.verify import _coerce_package
+from receiptd.crypto import canonical_json, canonical_json_subset
+from receiptd.verify import _coerce_package
 
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +51,7 @@ def test_signing_and_verify_roundtrip():
     sk = SigningKey.generate()
     msg = b"hello birkin"
     sig = sk.sign(msg)
-    from birkin.crypto import verify_signature
+    from receiptd.crypto import verify_signature
     assert verify_signature(sk.public_b64, sig, msg)
     assert not verify_signature(sk.public_b64, sig, b"tampered")
 

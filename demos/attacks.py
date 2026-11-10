@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import (  # noqa: E402
+from receiptd import (  # noqa: E402
     Engine,
     HermesAdapter,
     PolicySpec,
@@ -45,7 +45,7 @@ from birkin import (  # noqa: E402
     render_report,
     verify_package,
 )
-from birkin.verify import load_run_package  # noqa: E402
+from receiptd.verify import load_run_package  # noqa: E402
 
 
 def _print_header(title: str) -> None:

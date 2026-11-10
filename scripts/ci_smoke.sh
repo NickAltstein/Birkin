@@ -74,7 +74,7 @@ fi
 banner "2. birkin demo -> VERDICT: AUTHENTIC"
 DEMO_PKG="$WORK/demo.json"
 step "running birkin demo --out $DEMO_PKG"
-if python3 -m birkin.cli demo --out "$DEMO_PKG" >"$WORK/demo.out" 2>&1; then
+if python3 -m receiptd.cli demo --out "$DEMO_PKG" >"$WORK/demo.out" 2>&1; then
     if grep -q "VERDICT: AUTHENTIC" "$WORK/demo.out"; then
         ok "birkin demo produces AUTHENTIC"
     else
@@ -87,7 +87,7 @@ fi
 # --- 3. birkin verify (offline) ------------------------------------------- #
 banner "3. birkin verify $DEMO_PKG (offline, no server)"
 step "verifying exported package"
-if python3 -m birkin.cli verify "$DEMO_PKG" >"$WORK/verify.out" 2>&1; then
+if python3 -m receiptd.cli verify "$DEMO_PKG" >"$WORK/verify.out" 2>&1; then
     if grep -q "VERDICT: AUTHENTIC" "$WORK/verify.out"; then
         ok "offline verify = AUTHENTIC"
         sed 's/^/      /' "$WORK/verify.out"
@@ -100,7 +100,7 @@ fi
 
 # --- 4. attack 1: prompt injection ---------------------------------------- #
 banner "4. birkin attack 1 (prompt injection / goal hijacking)"
-if python3 -m birkin.cli attack 1 --out "$WORK/attack1.json" >"$WORK/attack1.out" 2>&1; then
+if python3 -m receiptd.cli attack 1 --out "$WORK/attack1.json" >"$WORK/attack1.out" 2>&1; then
     if grep -q "decision=deny" "$WORK/attack1.out" && grep -q "VERDICT: AUTHENTIC" "$WORK/attack1.out"; then
         ok "attack 1 blocked + AUTHENTIC"
         grep -E "decision=|VERDICT" "$WORK/attack1.out" | sed 's/^/      /'
@@ -113,7 +113,7 @@ fi
 
 # --- 5. attack 2: privilege escalation ----------------------------------- #
 banner "5. birkin attack 2 (privilege escalation)"
-if python3 -m birkin.cli attack 2 --out "$WORK/attack2.json" >"$WORK/attack2.out" 2>&1; then
+if python3 -m receiptd.cli attack 2 --out "$WORK/attack2.json" >"$WORK/attack2.out" 2>&1; then
     if grep -q "decision=deny" "$WORK/attack2.out" \
        && grep -q "decision=require_approval" "$WORK/attack2.out" \
        && grep -q "VERDICT: AUTHENTIC" "$WORK/attack2.out"; then
@@ -129,7 +129,7 @@ fi
 
 # --- 6. attack 3: tamper detection (clean AUTHENTIC + tampered TAMPERED) - #
 banner "6. birkin attack 3 (tamper detection — clean AUTHENTIC + tampered TAMPERED)"
-if python3 -m birkin.cli attack 3 --out "$WORK/attack3.json" >"$WORK/attack3.out" 2>&1; then
+if python3 -m receiptd.cli attack 3 --out "$WORK/attack3.json" >"$WORK/attack3.out" 2>&1; then
     if grep -q "VERDICT: AUTHENTIC" "$WORK/attack3.out" \
        && grep -q "VERDICT: TAMPERED" "$WORK/attack3.out"; then
         ok "attack 3: clean=AUTHENTIC, tampered=TAMPERED"
@@ -147,7 +147,7 @@ banner "7. NullAgent second-adapter proof (same engine, same verifier)"
 step "running NullAgent through Birkin + verify_package"
 if python3 -c "
 import sys; sys.path.insert(0, '$ROOT')
-from birkin import Engine, NullAgentAdapter, SigningKey, load_default_policy, verify_package
+from receiptd import Engine, NullAgentAdapter, SigningKey, load_default_policy, verify_package
 sk = SigningKey.generate()
 p = load_default_policy()
 adapter = NullAgentAdapter()

@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from birkin import Engine, HermesAdapter, SigningKey, load_default_policy, verify_package
-from birkin.verify import _coerce_package
+from receiptd import Engine, HermesAdapter, SigningKey, load_default_policy, verify_package
+from receiptd.verify import _coerce_package
 
 
 @pytest.fixture

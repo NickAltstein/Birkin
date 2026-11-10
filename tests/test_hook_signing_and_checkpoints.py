@@ -341,7 +341,7 @@ def test_stop_gate_exit_0_after_retry_cap_with_gave_up_receipt(tmp_path: Path):
 # 9. Symlink cycle denied
 # ---------------------------------------------------------------------------
 def test_symlink_cycle_denied(tmp_path: Path):
-    from birkin import Engine, NullAgentAdapter, SigningKey, PolicySpec
+    from receiptd import Engine, NullAgentAdapter, SigningKey, PolicySpec
 
     link_a = tmp_path / "link_a"
     link_b = tmp_path / "link_b"
