@@ -217,6 +217,11 @@ def test_rewrite_allow_as_unsigned_deny_update_anchor_fails(tmp_path: Path, monk
     # Attacker also updates anchor hash to match forged_deny["hash"]
     state_file = key_dir / "ledger_state.json"
     anchor = json.loads(state_file.read_text(encoding="utf-8"))
+    norm = str(ledger.resolve())
+    if "ledgers" in anchor and norm in anchor["ledgers"]:
+        anchor["ledgers"][norm]["last_hash"] = forged_deny["hash"]
+    if norm in anchor and isinstance(anchor[norm], dict):
+        anchor[norm]["last_hash"] = forged_deny["hash"]
     anchor["last_hash"] = forged_deny["hash"]
     state_file.write_text(json.dumps(anchor), encoding="utf-8")
 
@@ -398,3 +403,103 @@ def test_gate_denies_if_anchor_write_fails(tmp_path: Path):
     )
     # Must deny with exit 2
     assert proc.returncode == 2
+
+
+def test_multi_project_shared_keydir_independent_anchors(tmp_path: Path):
+    """Gate runs in project A then project B with a shared RECEIPTD_KEY_DIR,
+
+    then verify A and verify B both exit 0; truncating A still exits 2.
+    """
+    import subprocess
+    import sys
+
+    shared_key_dir = tmp_path / "shared_keys"
+    proj_a = tmp_path / "project_a"
+    proj_a.mkdir()
+    ledger_a = proj_a / "receipts.jsonl"
+
+    proj_b = tmp_path / "project_b"
+    proj_b.mkdir()
+    ledger_b = proj_b / "receipts.jsonl"
+
+    env = {
+        **os.environ,
+        "RECEIPTD_KEY_DIR": str(shared_key_dir),
+        "HOME": str(tmp_path),
+    }
+
+    payload_a = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "a.txt"},
+        "session_id": "session-a",
+    }
+    payload_b = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls -la"},
+        "session_id": "session-b",
+    }
+
+    # 1. Run gate in Project A
+    proc_a = subprocess.run(
+        [sys.executable, "-m", "receiptd.hooks.claude_code_gate", "--ledger", str(ledger_a)],
+        input=json.dumps(payload_a),
+        capture_output=True,
+        text=True,
+        cwd=proj_a,
+        env=env,
+    )
+    assert proc_a.returncode == 0
+
+    # 2. Run gate in Project B (overwriting shared state if not keyed by ledger path!)
+    proc_b = subprocess.run(
+        [sys.executable, "-m", "receiptd.hooks.claude_code_gate", "--ledger", str(ledger_b)],
+        input=json.dumps(payload_b),
+        capture_output=True,
+        text=True,
+        cwd=proj_b,
+        env=env,
+    )
+    assert proc_b.returncode == 0
+
+    # 3. Verify Project A and Project B both exit 0
+    ver_a = subprocess.run(
+        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger_a)],
+        capture_output=True,
+        text=True,
+        cwd=proj_a,
+        env=env,
+    )
+    assert ver_a.returncode == 0, f"Verify A failed: {ver_a.stdout}\n{ver_a.stderr}"
+    assert "✓ VERDICT: AUTHENTIC" in ver_a.stdout
+
+    ver_b = subprocess.run(
+        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger_b)],
+        capture_output=True,
+        text=True,
+        cwd=proj_b,
+        env=env,
+    )
+    assert ver_b.returncode == 0, f"Verify B failed: {ver_b.stdout}\n{ver_b.stderr}"
+    assert "✓ VERDICT: AUTHENTIC" in ver_b.stdout
+
+    # 4. Truncating A still exits 2
+    ledger_a.write_text("", encoding="utf-8")
+    ver_a_trunc = subprocess.run(
+        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger_a)],
+        capture_output=True,
+        text=True,
+        cwd=proj_a,
+        env=env,
+    )
+    assert ver_a_trunc.returncode == 2
+    assert "TAMPER DETECTED" in ver_a_trunc.stdout
+
+    # Verify B still exits 0
+    ver_b_still_ok = subprocess.run(
+        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger_b)],
+        capture_output=True,
+        text=True,
+        cwd=proj_b,
+        env=env,
+    )
+    assert ver_b_still_ok.returncode == 0

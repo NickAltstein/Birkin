@@ -262,14 +262,21 @@ def _verify_ledger_file(
                     state_file = legacy_file
             if state_file.exists():
                 try:
-                    anchor_data = json.loads(state_file.read_text(encoding="utf-8"))
-                    anchor_seq = int(anchor_data.get("last_seq", 0))
-                    if anchor_seq > 0:
-                        typer.echo("=" * 65)
-                        typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor_seq}")
-                        typer.echo("=" * 65)
-                        typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
-                        return False
+                    raw_data = json.loads(state_file.read_text(encoding="utf-8"))
+                    norm_ledger = str(ledger_path.resolve())
+                    ledger_anchor = None
+                    if isinstance(raw_data.get("ledgers"), dict) and norm_ledger in raw_data["ledgers"]:
+                        ledger_anchor = raw_data["ledgers"][norm_ledger]
+                    elif raw_data.get("ledger_path") == norm_ledger:
+                        ledger_anchor = raw_data
+                    if ledger_anchor:
+                        anchor_seq = int(ledger_anchor.get("last_seq", 0))
+                        if anchor_seq > 0:
+                            typer.echo("=" * 65)
+                            typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor_seq}")
+                            typer.echo("=" * 65)
+                            typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
+                            return False
                 except Exception:
                     pass
         typer.echo("Ledger is empty. No execution frames recorded.")
@@ -454,43 +461,65 @@ def _verify_ledger_file(
                 anchor_data = None
 
             if anchor_data is not None:
-                sig = anchor_data.get("sig")
-                if not sig:
-                    tamper_detected = True
-                    tamper_reason = f"Ledger anchor in {state_file} is unsigned (missing Ed25519 signature)"
-                else:
-                    signable = {
-                        "last_hash": str(anchor_data.get("last_hash", "")),
-                        "last_seq": int(anchor_data.get("last_seq", 0)),
-                        "ledger_path": str(anchor_data.get("ledger_path", "")),
-                    }
-                    canonical_bytes = canonical_json(signable)
-                    if not pubkey_target or not verify_ed25519(pubkey_target, sig, canonical_bytes):
+                norm_ledger = str(ledger_path.resolve())
+                ledger_anchor = None
+                ledgers = anchor_data.get("ledgers")
+                if isinstance(ledgers, dict) and norm_ledger in ledgers:
+                    ledger_anchor = ledgers[norm_ledger]
+                elif norm_ledger in anchor_data and isinstance(anchor_data[norm_ledger], dict):
+                    ledger_anchor = anchor_data[norm_ledger]
+                elif anchor_data.get("ledger_path") == norm_ledger:
+                    ledger_anchor = anchor_data
+                elif "last_seq" in anchor_data and not anchor_data.get("ledger_path"):
+                    ledger_anchor = anchor_data
+
+                if ledger_anchor is None:
+                    if receipt_count > 0:
                         tamper_detected = True
-                        tamper_reason = f"Invalid Ed25519 signature on ledger anchor in {state_file}"
+                        tamper_reason = (
+                            f"Missing signed ledger anchor for {norm_ledger}: "
+                            f"anchor state file exists but contains no anchor for this ledger path"
+                        )
+                else:
+                    sig = ledger_anchor.get("sig")
+                    if not sig:
+                        tamper_detected = True
+                        tamper_reason = f"Ledger anchor in {state_file} is unsigned (missing Ed25519 signature)"
                     else:
-                        anchor_path = anchor_data.get("ledger_path")
-                        norm_ledger = str(ledger_path.resolve())
-                        if anchor_path and anchor_path != norm_ledger:
+                        signable = {
+                            "last_hash": str(ledger_anchor.get("last_hash", "")),
+                            "last_seq": int(ledger_anchor.get("last_seq", 0)),
+                            "ledger_path": str(ledger_anchor.get("ledger_path", "")),
+                        }
+                        canonical_bytes = canonical_json(signable)
+                        if not pubkey_target or not verify_ed25519(pubkey_target, sig, canonical_bytes):
                             tamper_detected = True
-                            tamper_reason = f"Ledger anchor path mismatch: recorded {anchor_path}, verifying {norm_ledger}"
+                            tamper_reason = f"Invalid Ed25519 signature on ledger anchor in {state_file}"
                         else:
-                            anchor_seq = int(anchor_data.get("last_seq", 0))
-                            anchor_hash = str(anchor_data.get("last_hash", ""))
-                            if receipt_count < anchor_seq:
+                            anchor_path = ledger_anchor.get("ledger_path")
+                            if anchor_path and anchor_path != norm_ledger:
                                 tamper_detected = True
-                                tamper_reason = (
-                                    f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
-                                    f"but recorded state expects sequence #{anchor_seq}"
-                                )
-                            elif receipt_count > 0 and anchor_seq in receipts_by_seq:
-                                actual_hash = receipts_by_seq[anchor_seq]["hash"]
-                                if actual_hash != anchor_hash:
+                                tamper_reason = f"Ledger anchor path mismatch: recorded {anchor_path}, verifying {norm_ledger}"
+                            else:
+                                anchor_seq = int(ledger_anchor.get("last_seq", 0))
+                                anchor_hash = str(ledger_anchor.get("last_hash", ""))
+                                if receipt_count < anchor_seq:
                                     tamper_detected = True
                                     tamper_reason = (
-                                        f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
-                                        f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                                        f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
+                                        f"but recorded state expects sequence #{anchor_seq}"
                                     )
+                                elif receipt_count == 0 and anchor_seq > 0:
+                                    tamper_detected = True
+                                    tamper_reason = f"Ledger is empty, but recorded state expects sequence #{anchor_seq}"
+                                elif receipt_count > 0 and anchor_seq in receipts_by_seq:
+                                    actual_hash = receipts_by_seq[anchor_seq]["hash"]
+                                    if actual_hash != anchor_hash:
+                                        tamper_detected = True
+                                        tamper_reason = (
+                                            f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
+                                            f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                                        )
 
     if tamper_detected:
         typer.echo("=" * 65)

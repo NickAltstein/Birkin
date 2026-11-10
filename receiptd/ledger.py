@@ -251,9 +251,13 @@ def record_ledger_anchor(
 ) -> None:
     """Record the highest sequence number, hash, and Ed25519 signature in ledger_state.json.
 
-    Uses an atomic write via a temporary file and os.replace with 0600 permissions.
+    Maintains per-ledger signed state in data["ledgers"][norm_path] and top-level.
+    Uses an atomic write via a temporary file and os.replace with 0600 permissions,
+    protected by an exclusive file lock to prevent concurrent worker updates from colliding.
     """
+    import fcntl
     import time
+
     kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
     kd.mkdir(parents=True, exist_ok=True)
     try:
@@ -281,20 +285,60 @@ def record_ledger_anchor(
     }
 
     state_file = kd / "ledger_state.json"
-    temp_file = kd / f".ledger_state.tmp.{os.getpid()}.{time.time_ns()}"
-    try:
-        temp_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    lock_file_path = kd / ".ledger_state.lock"
+
+    with open(lock_file_path, "a+", encoding="utf-8") as lock_file:
         try:
-            os.chmod(temp_file, 0o600)
+            os.chmod(lock_file_path, 0o600)
         except OSError:
             pass
-        os.replace(temp_file, state_file)
-    finally:
-        if temp_file.exists():
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            data: dict[str, Any] = {}
+            if state_file.exists():
+                try:
+                    data = json.loads(state_file.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+
+            ledgers = data.get("ledgers")
+            if not isinstance(ledgers, dict):
+                ledgers = {}
+                if data.get("ledger_path"):
+                    ledgers[data["ledger_path"]] = {
+                        "ledger_path": data["ledger_path"],
+                        "last_seq": data.get("last_seq", 0),
+                        "last_hash": data.get("last_hash", ""),
+                        "sig": data.get("sig", ""),
+                    }
+                data["ledgers"] = ledgers
+
+            if norm_path:
+                data["ledgers"][norm_path] = dict(payload)
+                data[norm_path] = dict(payload)
+
+            # Also keep top-level in sync with most recent anchor for backward compatibility
+            data["ledger_path"] = norm_path
+            data["last_seq"] = int(seq)
+            data["last_hash"] = str(r_hash)
+            data["sig"] = sig
+
+            temp_file = kd / f".ledger_state.tmp.{os.getpid()}.{time.time_ns()}"
             try:
-                temp_file.unlink()
-            except OSError:
-                pass
+                temp_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                try:
+                    os.chmod(temp_file, 0o600)
+                except OSError:
+                    pass
+                os.replace(temp_file, state_file)
+            finally:
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except OSError:
+                        pass
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def read_ledger_anchor(
@@ -307,7 +351,18 @@ def read_ledger_anchor(
         state_file = kd / name
         if state_file.exists():
             try:
-                return json.loads(state_file.read_text(encoding="utf-8"))
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                if ledger_path:
+                    norm = str(Path(ledger_path).resolve())
+                    ledgers = data.get("ledgers")
+                    if isinstance(ledgers, dict) and norm in ledgers:
+                        return ledgers[norm]
+                    if norm in data and isinstance(data[norm], dict):
+                        return data[norm]
+                    if data.get("ledger_path") == norm:
+                        return data
+                    return None
+                return data
             except Exception:
                 pass
     return None
