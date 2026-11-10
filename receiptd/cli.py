@@ -404,10 +404,20 @@ def stop_gate_cmd(
     test_cmd: Optional[str] = typer.Option(None, "--test-cmd", "-t", help="Verification command to execute (defaults to auto-detection)."),
     ledger: str = typer.Option(".receiptd/receipts.jsonl", "--ledger", "-l", help="Path to audit ledger."),
     timeout: int = typer.Option(120, "--timeout", help="Test timeout in seconds."),
+    max_retries: int = typer.Option(3, "--max-retries", help="Max retry blocks before giving up when stop_hook_active is true."),
+    session_id: Optional[str] = typer.Option(None, "--session-id", help="Session ID for tracking retry attempts."),
+    stop_hook_active: Optional[bool] = typer.Option(None, "--stop-hook-active", help="Flag indicating stop hook is already active."),
 ) -> None:
     """Gate agent completion: exit 0 if tests pass, exit 2 if tests fail, recording signed receipts."""
     from .hooks.claude_code_stop_gate import run_stop_gate
-    code = run_stop_gate(test_cmd=test_cmd, ledger_path=ledger, timeout_sec=timeout)
+    code = run_stop_gate(
+        test_cmd=test_cmd,
+        ledger_path=ledger,
+        timeout_sec=timeout,
+        max_retries=max_retries,
+        session_id=session_id,
+        stop_hook_active=stop_hook_active,
+    )
     if code != 0:
         raise typer.Exit(code=code)
 

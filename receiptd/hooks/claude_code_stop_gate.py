@@ -62,13 +62,60 @@ def detect_test_command() -> str:
     return "pytest"
 
 
+def _count_consecutive_blocks(ledger_path: str, session_id: str) -> int:
+    """Count trailing consecutive STOP_GATE block receipts for this session_id."""
+    if not os.path.exists(ledger_path):
+        return 0
+    count = 0
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        for line in reversed(lines):
+            try:
+                rec = json.loads(line)
+            except Exception:
+                break
+            if rec.get("event_type") != "STOP_GATE":
+                break
+            if session_id and rec.get("session_id") not in (None, "", session_id):
+                break
+            if rec.get("decision") in ("BLOCKED_FAIL_CLOSED", "deny"):
+                count += 1
+            else:
+                break
+    except Exception:
+        return 0
+    return count
+
+
 def run_stop_gate(
     test_cmd: str | None = None,
     ledger_path: str = ".receiptd/receipts.jsonl",
     timeout_sec: int = 120,
+    max_retries: int = 3,
+    session_id: str | None = None,
+    stop_hook_active: bool | None = None,
+    stdin_json: dict | None = None,
 ) -> int:
     """Execute the stop gate verification and record a signed receipt."""
     t0 = time.perf_counter()
+
+    # Parse Claude Code hook JSON input from stdin if not explicitly supplied
+    parsed_stdin = {}
+    if stdin_json is not None:
+        parsed_stdin = stdin_json
+    elif not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read()
+            if raw.strip():
+                parsed_stdin = json.loads(raw)
+        except Exception:
+            pass
+
+    if session_id is None:
+        session_id = str(parsed_stdin.get("session_id") or os.environ.get("RECEIPTD_SESSION_ID", "default"))
+    if stop_hook_active is None:
+        stop_hook_active = bool(parsed_stdin.get("stop_hook_active", False))
 
     resolved_cmd = test_cmd or detect_test_command()
 
@@ -120,28 +167,68 @@ def run_stop_gate(
         stderr_snip = f"Failed to execute test command: {exc}"
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-    decision = "ALLOWED_VERIFIED" if test_passed else "BLOCKED_FAIL_CLOSED"
-
-    receipt_core = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "event_type": "STOP_GATE",
-        "test_command": resolved_cmd,
-        "test_exit_code": exit_code,
-        "decision": decision,
-        "prev_receipt_hash": prev_hash,
-        "latency_ms": latency_ms,
-    }
-    receipt_hash = sha256_hex(canonicalize_jcs(receipt_core))
-    receipt_core["receipt_sha256"] = receipt_hash
-
-    # Write audit receipt to ledger
-    with open(ledger_path, "a", encoding="utf-8") as f:
-        f.write(canonicalize_jcs(receipt_core) + "\n")
 
     if not test_passed:
         diag = stderr_snip or stdout_snip or f"Command exited with status {exit_code}"
+        test_output_hash = sha256_hex(diag)
+        prior_blocks = _count_consecutive_blocks(ledger_path, session_id)
+        current_retries = prior_blocks + 1
+
+        if stop_hook_active and current_retries >= max_retries:
+            # At cap: give up and exit 0 to prevent infinite agent loop
+            receipt_core = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event_type": "STOP_GATE",
+                "session_id": session_id,
+                "test_command": resolved_cmd,
+                "test_exit_code": exit_code,
+                "decision": "gave_up",
+                "test_output_sha256": test_output_hash,
+                "retries": current_retries,
+                "stop_hook_active": True,
+                "prev_receipt_hash": prev_hash,
+                "latency_ms": latency_ms,
+            }
+            receipt_hash = sha256_hex(canonicalize_jcs(receipt_core))
+            receipt_core["receipt_sha256"] = receipt_hash
+
+            with open(ledger_path, "a", encoding="utf-8") as f:
+                f.write(canonicalize_jcs(receipt_core) + "\n")
+
+            sys.stderr.write(
+                f"\n[RECEIPTD STOP GATE GAVE UP] Max retries ({max_retries}) reached with stop_hook_active=True.\n"
+                f"  ├─ Session ID: {session_id}\n"
+                f"  ├─ Verification Command: {resolved_cmd} (exit code: {exit_code})\n"
+                f"  ├─ Test Output SHA256: {test_output_hash}\n"
+                f"  ├─ Consecutive Retries: {current_retries}\n"
+                f"  └─ Signed Gave Up Receipt: {receipt_hash[:24]}...\n"
+                f"Exiting 0 to prevent infinite agent retry loop.\n\n"
+            )
+            return 0
+
+        # Under cap: hard block with exit 2
+        receipt_core = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "event_type": "STOP_GATE",
+            "session_id": session_id,
+            "test_command": resolved_cmd,
+            "test_exit_code": exit_code,
+            "decision": "BLOCKED_FAIL_CLOSED",
+            "test_output_sha256": test_output_hash,
+            "retries": current_retries,
+            "stop_hook_active": stop_hook_active,
+            "prev_receipt_hash": prev_hash,
+            "latency_ms": latency_ms,
+        }
+        receipt_hash = sha256_hex(canonicalize_jcs(receipt_core))
+        receipt_core["receipt_sha256"] = receipt_hash
+
+        with open(ledger_path, "a", encoding="utf-8") as f:
+            f.write(canonicalize_jcs(receipt_core) + "\n")
+
         sys.stderr.write(
             f"\n[RECEIPTD STOP GATE HARD BLOCK] Cannot declare completion while tests are failing.\n"
+            f"  ├─ Session ID: {session_id}\n"
             f"  ├─ Verification Command: {resolved_cmd} (exit code: {exit_code})\n"
             f"  ├─ Latency: {latency_ms}ms\n"
             f"  ├─ Signed Rejection Receipt: {receipt_hash[:24]}...\n"
@@ -151,8 +238,26 @@ def run_stop_gate(
         )
         return 2  # Exit code 2 deterministically rejects Claude Code Stop
 
+    # Tests passed
+    receipt_core = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "event_type": "STOP_GATE",
+        "session_id": session_id,
+        "test_command": resolved_cmd,
+        "test_exit_code": exit_code,
+        "decision": "ALLOWED_VERIFIED",
+        "prev_receipt_hash": prev_hash,
+        "latency_ms": latency_ms,
+    }
+    receipt_hash = sha256_hex(canonicalize_jcs(receipt_core))
+    receipt_core["receipt_sha256"] = receipt_hash
+
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(canonicalize_jcs(receipt_core) + "\n")
+
     sys.stdout.write(
         f"\n[RECEIPTD STOP GATE PASSED] All tests verified. Completion allowed.\n"
+        f"  ├─ Session ID: {session_id}\n"
         f"  ├─ Verification Command: {resolved_cmd}\n"
         f"  ├─ Latency: {latency_ms}ms\n"
         f"  └─ Signed Completion Receipt: {receipt_hash[:24]}...\n"
@@ -165,9 +270,19 @@ def main() -> int:
     parser.add_argument("--test-cmd", default=None, help="Command to run to verify tests (e.g. pytest, npm test)")
     parser.add_argument("--ledger", default=".receiptd/receipts.jsonl", help="Path to audit ledger")
     parser.add_argument("--timeout", type=int, default=120, help="Test timeout in seconds")
+    parser.add_argument("--max-retries", type=int, default=3, help="Max retry blocks before giving up when stop_hook_active is true")
+    parser.add_argument("--session-id", default=None, help="Session identifier")
+    parser.add_argument("--stop-hook-active", action="store_true", default=None, help="Stop hook active flag")
 
     args, _ = parser.parse_known_args()
-    return run_stop_gate(test_cmd=args.test_cmd, ledger_path=args.ledger, timeout_sec=args.timeout)
+    return run_stop_gate(
+        test_cmd=args.test_cmd,
+        ledger_path=args.ledger,
+        timeout_sec=args.timeout,
+        max_retries=args.max_retries,
+        session_id=args.session_id,
+        stop_hook_active=args.stop_hook_active,
+    )
 
 
 if __name__ == "__main__":
