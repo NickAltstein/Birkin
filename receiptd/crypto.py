@@ -30,6 +30,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+from pathlib import Path
 from typing import Any, Iterable
 
 from cryptography.hazmat.primitives import serialization
@@ -133,6 +135,13 @@ class SigningKey:
     def from_private_b64(cls, b64: str) -> "SigningKey":
         return cls.from_private_bytes(base64.b64decode(b64))
 
+    @classmethod
+    def from_pem(cls, pem_bytes: bytes) -> "SigningKey":
+        key = serialization.load_pem_private_key(pem_bytes, password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise ValueError("Key is not an Ed25519 private key")
+        return cls(key)
+
     # --- public accessors -------------------------------------------------
     @property
     def private_bytes(self) -> bytes:
@@ -140,6 +149,21 @@ class SigningKey:
             encoding=serialization.Encoding.Raw,
             format=serialization.PrivateFormat.Raw,
             encryption_algorithm=serialization.NoEncryption(),
+        )
+
+    @property
+    def pem_bytes(self) -> bytes:
+        return self._priv.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+
+    @property
+    def public_pem_bytes(self) -> bytes:
+        return self._pub.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
 
     @property
@@ -165,14 +189,149 @@ class SigningKey:
         return base64.b64encode(sig).decode("ascii")
 
 
+def get_key_dir() -> Path:
+    return Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+
+
+def get_signing_key(key_dir: Path | None = None) -> SigningKey:
+    """Load or generate the persistent Ed25519 signing key.
+
+    Permissions: 0700 on key directory, 0600 on private key file.
+    Env overrides: RECEIPTD_SIGNING_KEY or BIRKIN_SIGNING_KEY.
+    """
+    env_key = os.environ.get("RECEIPTD_SIGNING_KEY") or os.environ.get("BIRKIN_SIGNING_KEY")
+    if env_key:
+        env_key_clean = env_key.strip()
+        if "BEGIN" in env_key_clean:
+            return SigningKey.from_pem(env_key_clean.encode("utf-8"))
+        try:
+            return SigningKey.from_private_b64(env_key_clean)
+        except Exception:
+            return SigningKey.from_private_bytes(env_key_clean.encode("utf-8"))
+
+    target_dir = key_dir or get_key_dir()
+    priv_path = target_dir / "receiptd_ed25519.pem"
+    pub_path = target_dir / "receiptd_ed25519.pub.pem"
+
+    if priv_path.exists():
+        blob = priv_path.read_bytes()
+        return SigningKey.from_pem(blob)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(target_dir, 0o700)
+    except OSError:
+        pass
+
+    sk = SigningKey.generate()
+    priv_path.write_bytes(sk.pem_bytes)
+    try:
+        os.chmod(priv_path, 0o600)
+    except OSError:
+        pass
+
+    pub_path.write_bytes(sk.public_pem_bytes)
+    try:
+        os.chmod(pub_path, 0o644)
+    except OSError:
+        pass
+
+    return sk
+
+
+def get_public_key_pem(key_dir: Path | None = None) -> str:
+    """Return the PEM representation of the current public key."""
+    env_pub = os.environ.get("RECEIPTD_PUBLIC_KEY")
+    if env_pub:
+        return env_pub.strip()
+    sk = get_signing_key(key_dir=key_dir)
+    return sk.public_pem_bytes.decode("ascii")
+
+
+def get_pubkey_id(key: Any) -> str:
+    """Return the 64-char hex SHA-256 fingerprint of the raw public key bytes."""
+    pub: Ed25519PublicKey
+    if isinstance(key, SigningKey):
+        pub = key.public_key
+    elif isinstance(key, Ed25519PublicKey):
+        pub = key
+    elif isinstance(key, str):
+        if "BEGIN" in key:
+            loaded = serialization.load_pem_public_key(key.encode("utf-8"))
+            if not isinstance(loaded, Ed25519PublicKey):
+                raise ValueError("Not an Ed25519 public key")
+            pub = loaded
+        else:
+            pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(key))
+    elif isinstance(key, bytes):
+        if b"BEGIN" in key:
+            loaded = serialization.load_pem_public_key(key)
+            if not isinstance(loaded, Ed25519PublicKey):
+                raise ValueError("Not an Ed25519 public key")
+            pub = loaded
+        elif len(key) == 32:
+            pub = Ed25519PublicKey.from_public_bytes(key)
+        else:
+            pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(key))
+    else:
+        raise TypeError(f"Unsupported key type: {type(key)}")
+
+    raw = pub.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def verify_ed25519(public_key: Any, signature: str | bytes, message: bytes) -> bool:
+    """Verify an Ed25519 signature over message bytes against any key representation."""
+    try:
+        pub: Ed25519PublicKey
+        if isinstance(public_key, SigningKey):
+            pub = public_key.public_key
+        elif isinstance(public_key, Ed25519PublicKey):
+            pub = public_key
+        elif isinstance(public_key, str):
+            if "BEGIN" in public_key:
+                loaded = serialization.load_pem_public_key(public_key.encode("utf-8"))
+                if not isinstance(loaded, Ed25519PublicKey):
+                    return False
+                pub = loaded
+            else:
+                pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
+        elif isinstance(public_key, bytes):
+            if b"BEGIN" in public_key:
+                loaded = serialization.load_pem_public_key(public_key)
+                if not isinstance(loaded, Ed25519PublicKey):
+                    return False
+                pub = loaded
+            elif len(public_key) == 32:
+                pub = Ed25519PublicKey.from_public_bytes(public_key)
+            else:
+                pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
+        else:
+            return False
+
+        sig_bytes: bytes
+        if isinstance(signature, str):
+            sig_bytes = base64.b64decode(signature)
+        elif isinstance(signature, bytes):
+            if len(signature) == 64:
+                sig_bytes = signature
+            else:
+                sig_bytes = base64.b64decode(signature)
+        else:
+            return False
+
+        pub.verify(sig_bytes, message)
+        return True
+    except Exception:
+        return False
+
+
 def verify_signature(public_b64: str, signature_b64: str, message: bytes) -> bool:
     """Verify a base64 Ed25519 signature against a base64 public key."""
-    try:
-        pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_b64))
-        pub.verify(base64.b64decode(signature_b64), message)
-        return True
-    except (InvalidSignature, ValueError, TypeError):
-        return False
+    return verify_ed25519(public_b64, signature_b64, message)
 
 
 def public_b64_to_bytes(public_b64: str) -> bytes:
@@ -181,6 +340,11 @@ def public_b64_to_bytes(public_b64: str) -> bytes:
 
 __all__ = [
     "SigningKey",
+    "get_key_dir",
+    "get_signing_key",
+    "get_public_key_pem",
+    "get_pubkey_id",
+    "verify_ed25519",
     "verify_signature",
     "canonical_json",
     "canonical_json_subset",
