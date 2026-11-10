@@ -544,6 +544,55 @@ def _verify_ledger_file(
     return True
 
 
+@app.command("anchor")
+def anchor(
+    ledger: str = typer.Option(..., "--ledger", help="Path to the JSONL receipt ledger to anchor."),
+    force_reanchor: bool = typer.Option(False, "--force-reanchor", help="Replace an existing anchor for this ledger."),
+) -> None:
+    """Fully verify a ledger, then write a signed anchor for its last receipt."""
+    from .ledger import record_ledger_anchor
+
+    ledger_path = Path(ledger)
+    if not ledger_path.exists():
+        typer.echo(f"error: ledger not found: {ledger}", err=True)
+        raise typer.Exit(code=2)
+
+    if not force_reanchor and read_ledger_anchor(ledger_path=ledger_path) is not None:
+        typer.echo(
+            f"error: an anchor for {ledger_path.resolve()} already exists; "
+            "pass --force-reanchor to replace it",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Chain + signature verification only; the anchor itself is what we are creating.
+    if not _verify_ledger_file(ledger_path, allow_unanchored=True):
+        typer.echo("error: ledger failed verification; refusing to anchor", err=True)
+        raise typer.Exit(code=2)
+
+    last = None
+    with open(ledger_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if entry.get("type") != "checkpoint":
+                last = entry
+    if last is None:
+        typer.echo("error: ledger has no receipts to anchor", err=True)
+        raise typer.Exit(code=2)
+
+    seq = int(last.get("seq", 0))
+    r_hash = last.get("hash") or last.get("receipt_sha256", "")
+    try:
+        record_ledger_anchor(seq, r_hash, ledger_path=ledger_path)
+    except Exception as exc:
+        typer.echo(f"error: could not write anchor: {exc}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"Anchored {ledger_path.resolve()} at sequence #{seq}")
+
+
 @app.command("verify")
 def verify(
     package: Optional[str] = typer.Argument(None, help="Path to a receiptd or birkin run package (.json)"),

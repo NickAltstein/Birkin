@@ -503,3 +503,63 @@ def test_multi_project_shared_keydir_independent_anchors(tmp_path: Path):
         env=env,
     )
     assert ver_b_still_ok.returncode == 0
+
+
+def _build_chain(sk, n):
+    prev = GENESIS_HASH
+    out = []
+    for i in range(1, n + 1):
+        r = build_signed_receipt(
+            sk=sk, v=1, seq=i, ts=f"2026-11-10T12:00:0{i}Z", session_id="t", tool="Read",
+            args_sha256="0" * 64, decision="allow", rule_ids=[], blast_radius=0,
+            reason="ok", policy_sha256="0" * 64, prev_hash=prev,
+        )
+        prev = r["hash"]
+        out.append(r)
+    return out
+
+
+def test_anchor_command_adopts_pre_upgrade_ledger(tmp_path: Path, monkeypatch):
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    from receiptd.crypto import get_signing_key
+
+    sk = get_signing_key(key_dir=key_dir)
+    ledger = tmp_path / "receipts.jsonl"
+    for r in _build_chain(sk, 3):
+        append_ledger_entry(ledger, r)
+
+    # Pre-upgrade: no anchor -> verify fails
+    assert runner.invoke(app, ["verify", "--ledger", str(ledger)]).exit_code == 2
+
+    res = runner.invoke(app, ["anchor", "--ledger", str(ledger)])
+    assert res.exit_code == 0, res.output
+    assert "sequence #3" in res.output
+
+    assert runner.invoke(app, ["verify", "--ledger", str(ledger)]).exit_code == 0
+
+    # Existing anchor -> refuse, unless --force-reanchor
+    assert runner.invoke(app, ["anchor", "--ledger", str(ledger)]).exit_code == 2
+    assert runner.invoke(app, ["anchor", "--ledger", str(ledger), "--force-reanchor"]).exit_code == 0
+
+
+def test_anchor_command_refuses_tampered_ledger(tmp_path: Path, monkeypatch):
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    from receiptd.crypto import get_signing_key
+
+    sk = get_signing_key(key_dir=key_dir)
+    ledger = tmp_path / "receipts.jsonl"
+    chain = _build_chain(sk, 3)
+    for r in chain:
+        append_ledger_entry(ledger, r)
+
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[1])
+    tampered["blast_radius"] = 99
+    lines[1] = json.dumps(tampered)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    res = runner.invoke(app, ["anchor", "--ledger", str(ledger)])
+    assert res.exit_code == 2
+    assert not (key_dir / "ledger_state.json").exists()
