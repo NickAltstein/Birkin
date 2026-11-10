@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import pytest
 from pathlib import Path
 from receiptd.hooks.claude_code_gate import (
@@ -83,4 +86,54 @@ def test_ledger_tamper_detection(tmp_path: Path):
     ledger.write_text("\n".join(tampered_lines) + "\n", encoding="utf-8")
 
     assert _verify_ledger_file(ledger) is False
+
+
+@pytest.mark.parametrize(
+    "payload_dict",
+    [
+        {},
+        {"tool_name": "Bash"},
+        {"tool_name": "  ", "tool_input": {}},
+        {"tool_name": "Bash", "tool_input": "x"},
+    ],
+)
+def test_evaluate_payload_missing_required_fields_denied(payload_dict):
+    blocked, score, triggered = evaluate_payload(payload_dict)
+    assert blocked is True
+    assert score == 100
+    assert triggered == ["MISSING_REQUIRED_FIELD"]
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "receiptd.hooks.claude_code_gate",
+        "birkin.hooks.claude_code_gate",
+    ],
+)
+@pytest.mark.parametrize(
+    "payload_dict",
+    [
+        {},
+        {"tool_name": "Bash"},
+        {"tool_name": "  ", "tool_input": {}},
+        {"tool_name": "Bash", "tool_input": "x"},
+    ],
+)
+def test_gate_subprocess_missing_fields_exit_2(tmp_path: Path, module: str, payload_dict: dict):
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "RECEIPTD_KEY_DIR": str(tmp_path / "keys"),
+    }
+    ledger = tmp_path / "receipts.jsonl"
+    res = subprocess.run(
+        [sys.executable, "-m", module, "--ledger", str(ledger)],
+        input=json.dumps(payload_dict),
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    assert res.returncode == 2
 
