@@ -268,6 +268,7 @@ def _verify_ledger_file(
     receipts_by_seq: dict[int, dict] = {}
     receipt_count = 0
     checkpoint_count = 0
+    unsigned_deny_count = 0
     last_checkpointed_seq = 0
     table_rows = []
 
@@ -377,6 +378,18 @@ def _verify_ledger_file(
                     tamper_detected = True
                     tamper_reason = f"Invalid Ed25519 signature at receipt sequence #{seq}"
                     break
+            else:
+                # Receipt without sig is ONLY allowed if signing_error: true AND decision == "deny"
+                decision = entry.get("decision", "UNKNOWN")
+                if is_signing_error and decision == "deny":
+                    unsigned_deny_count += 1
+                else:
+                    tamper_detected = True
+                    if is_signing_error and decision != "deny":
+                        tamper_reason = f"Unsigned receipt at sequence #{seq} has decision '{decision}' (only deny allowed with signing_error: true)"
+                    else:
+                        tamper_reason = f"Unsigned receipt at sequence #{seq} (missing Ed25519 signature)"
+                    break
 
             tool = entry.get("tool") or entry.get("tool_name", "unknown")
             decision = entry.get("decision", "UNKNOWN")
@@ -410,6 +423,7 @@ def _verify_ledger_file(
 
     typer.echo("=" * 65)
     typer.echo(f"✓ VERDICT: AUTHENTIC — {receipt_count} receipts, {checkpoint_count} checkpoints verified, 0 chain breaks.")
+    typer.echo(f"Unsigned deny receipts accepted: {unsigned_deny_count}")
     typer.echo("=" * 65)
     return True
 
