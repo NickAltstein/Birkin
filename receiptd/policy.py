@@ -46,6 +46,7 @@ with ``risk_score=100`` so the run cannot proceed silently.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -172,6 +173,18 @@ def _is_path_contained(
         if not pref_p.is_absolute() and cand_p.is_absolute():
             return False
 
+        # Fail closed immediately if candidate or prefix contains a symlink loop
+        for p in (cand_p, pref_p):
+            try:
+                p.stat()
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    return False
+                if e.errno != errno.ENOENT:
+                    return False
+            except (RuntimeError, ValueError):
+                return False
+
         # Lexical component containment (catches sibling prefixes and raw .. escapes)
         norm_cand = Path(os.path.normpath(candidate_path))
         norm_pref = Path(os.path.normpath(prefix_path))
@@ -180,6 +193,19 @@ def _is_path_contained(
         # Canonical resolved containment (resolves existing symlinks and normalizes paths)
         resolved_cand = cand_p.resolve()
         resolved_pref = pref_p.resolve()
+
+        # Check resolved targets for symlink cycles or resolution errors as well
+        for p in (resolved_cand, resolved_pref):
+            try:
+                p.stat()
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    return False
+                if e.errno != errno.ENOENT:
+                    return False
+            except (RuntimeError, ValueError):
+                return False
+
         resolved_match = resolved_cand.is_relative_to(resolved_pref)
 
         if decision_mode == "allow":
