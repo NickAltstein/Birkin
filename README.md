@@ -259,6 +259,9 @@ Cryptographic authorization receipts provide deterministic, non-repudiable audit
 3. **Model Identity & Intent:**
    A signed receipt proves that a specific tool name and canonical argument hash were evaluated against the policy ruleset and either allowed or blocked. It does **not** prove *which* model weights generated the request, whether the LLM was under prompt injection, or what latent reasoning led to the tool invocation.
 
+4. **Anchor Rollback (Tail Deletion):**
+   `receiptd verify` compares each ledger against a signed per-ledger anchor in `ledger_state.json` to detect deleted tail receipts. Every old copy of that file is also genuinely signed, so restoring an older `ledger_state.json` together with deleting the newer receipts is **not detected locally**. The mitigation is to export Merkle checkpoints off-machine (see "Merkle Checkpoints & Public Key Export"); a checkpoint held elsewhere proves receipts up to its `to_seq` existed. Ledgers written before anchoring existed can be adopted once with `receiptd anchor --ledger <path>`.
+
 ---
 
 ## Repository Structure
