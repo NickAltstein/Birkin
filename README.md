@@ -5,7 +5,7 @@
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
 [![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_RFC--8785-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
-[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAiNYC/agent-receipts/actions)
+[![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/agent-receipts/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
 Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **AgentReceipts** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **<1.5ms** while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
@@ -137,15 +137,16 @@ def execute_sql(query: str) -> list[dict]:
 
 ## Performance Benchmarks
 
-Measured on Apple M3 Max (macOS, Python 3.12 / Node 22.x) across 10,000 sequential MCP `tools/call` frames:
+Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchmarks/benchmark_overhead.py`):
 
-| Operation | p50 Latency | p99 Latency | Memory Overhead | External Network I/O |
+| Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
 | :--- | :--- | :--- | :--- | :--- |
-| **RFC-8785 Canonicalization + SHA-256** | 0.14 ms | 0.31 ms | < 1.2 MB | None |
-| **AST & Policy-as-Code Evaluation (25 Rules)** | 0.42 ms | 0.89 ms | < 2.5 MB | None |
-| **Ed25519 Signature Generation + Merkle Append** | 0.38 ms | 0.74 ms | < 1.8 MB | None |
-| **Total Birkin Interceptor Overhead** | **0.94 ms** | **1.94 ms** | **< 5.5 MB** | **0 bytes (100% Local)** |
-| *Baseline Comparison: LLM Guardrail Judge* | *410.00 ms* | *1,120.00 ms* | *N/A* | *External API Required* |
+| **AST & Policy-as-Code Evaluation** | 0.004 ms | 0.008 ms | < 1.0 MB | None |
+| **RFC-8785 Canonicalization + Ed25519 Signature** | 0.016 ms | 0.031 ms | < 1.5 MB | None |
+| **Total AgentReceipts Interceptor Overhead** | **0.020 ms** | **0.039 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
+
+Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`
 
 ---
 
@@ -204,4 +205,4 @@ birkin/
 
 ## License
 
-MIT © [Nick Altstein](https://github.com/NickAiNYC)
+MIT © [Nick Altstein](https://github.com/NickAltstein)
