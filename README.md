@@ -4,7 +4,7 @@
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
-[![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_RFC--8785-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
+[![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_canonical_JSON_(sorted_keys)-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
 [![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
@@ -146,7 +146,7 @@ sequenceDiagram
     participant Host as Host Environment (Postgres / Shell / API)
 
     Agent->>Proxy: JSON-RPC 2.0 tools/call (params + context)
-    Note over Proxy: 1. RFC-8785 JCS Canonicalization<br/>2. AST / Schema Policy Evaluation<br/>3. Blast-Radius Scoring (0-100)
+    Note over Proxy: 1. Canonical JSON (sorted keys)<br/>2. AST / Schema Policy Evaluation<br/>3. Blast-Radius Scoring (0-100)
     alt Policy Violated or Schema Malformed
         Proxy->>Ledger: Sign Ed25519 Rejection Receipt + Append Leaf
         Proxy-->>Agent: [BLOCKED_FAIL_CLOSED] + Cryptographic Proof
@@ -163,7 +163,7 @@ sequenceDiagram
 ## Engineering Guarantees
 
 - **Fail-Closed By Default**: Any unhandled exception, malformed JSON-RPC schema, missing policy context, or signature verification mismatch immediately halts execution before reaching the underlying runtime.
-- **RFC-8785 Canonical Hashing**: Payloads are normalized via JSON Canonicalization Scheme (JCS) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
+- **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
 - **Sub-2ms Deterministic Gate**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory.
 - **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_receipt_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
 
@@ -210,7 +210,7 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 | Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
 | :--- | :--- | :--- | :--- | :--- |
 | **AST & Policy-as-Code Evaluation** | 0.004 ms | 0.008 ms | < 1.0 MB | None |
-| **RFC-8785 Canonicalization + Ed25519 Signature** | 0.015 ms | 0.025 ms | < 1.5 MB | None |
+| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.015 ms | 0.025 ms | < 1.5 MB | None |
 | **Receiptd In-Process Interceptor (Policy + Signing)** | **0.020 ms** | **0.025 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
 | **Full Claude Code Hook Execution (Cold Python Process)** | **67.0 ms** | **68.7 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
@@ -241,7 +241,7 @@ Every evaluated tool call emits a deterministic receipt verifiable offline via `
     }
   },
   "cryptography": {
-    "canonical_spec": "RFC-8785-JCS",
+    "canonical_spec": "canonical JSON (sorted keys)",
     "payload_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "prev_receipt_hash": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
     "merkle_root": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
