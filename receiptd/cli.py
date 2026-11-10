@@ -303,42 +303,68 @@ def verify(
 
 
 # ---------------------------------------------------------------------------
-# Command: `receiptd card` (Trifecta Risk Card)
+# Command: `receiptd card` (Signed Trifecta Card)
 # ---------------------------------------------------------------------------
 
 @app.command("card")
 def card(
-    path: Optional[str] = typer.Option(None, "--path", "-p", help="Directory or file path to Claude Code / Codex session logs."),
-    days: int = typer.Option(30, "--days", "-d", help="Analysis time window in days (default: 30, use 0 for all)."),
-    out: str = typer.Option("receiptd-card.png", "--out", "-o", help="Output path for shareable PNG card."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Direct path to a .jsonl session log (Claude Code or Codex)."),
+    path: Optional[str] = typer.Option(None, "--path", "-p", help="Alias for --session."),
+    last: Optional[int] = typer.Option(None, "--last", "-n", help="Analyze the N most recent sessions (default: 1 if no session given)."),
+    out: str = typer.Option("card.png", "--out", "-o", help="Output image path (default: card.png; companion .svg and signed .json written too)."),
+    redact_paths: bool = typer.Option(False, "--redact-paths", help="Hash path components in evidence targets."),
+    days: int = typer.Option(30, "--days", "-d", help="Analysis window in days (backward compatibility)."),
     no_png: bool = typer.Option(False, "--no-png", help="Skip PNG rendering and print terminal card only."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Output verdict only (RED, YELLOW, GREEN)."),
 ) -> None:
-    """Audit local agent session logs for the Trifecta hazard and generate a shareable card."""
-    from .trifecta import scan_agent_logs, render_terminal_card, render_png_card
+    """Audit agent session logs for the lethal Trifecta hazard (private data + untrusted input + egress)."""
+    from receiptd.card.pipeline import analyze_last, analyze_paths
+    from receiptd.card.render_terminal import render_terminal
+    from receiptd.card.render_card import render_card_files
 
-    result = scan_agent_logs(target_path=path, days=days)
+    target_session = session or path
+    try:
+        if target_session:
+            report = analyze_paths([target_session], redacted=redact_paths)
+        else:
+            n = last if last is not None else 1
+            report = analyze_last(n, redacted=redact_paths)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
 
     if quiet:
-        typer.echo(result.overall_verdict)
+        typer.echo(report.level)
         return
 
     # Print terminal card
-    typer.echo(render_terminal_card(result))
+    json_name = Path(out).with_suffix(".json").name
+    render_terminal(report, card_json_name=json_name)
 
     if not no_png:
         try:
-            png_file = render_png_card(result, out_path=out)
-            typer.echo(f"  [✓] Shareable Trifecta Card exported to: {png_file}")
+            rendered = render_card_files(report, out)
+            typer.echo(f"\n  [✓] Signed Trifecta Card exported to: {rendered['png']}")
+            typer.echo(f"  [✓] Companion signature record:      {rendered['json']}")
         except Exception as e:
-            typer.echo(f"  [!] Note: PNG rendering skipped ({e})", err=True)
+            typer.echo(f"  [!] Note: Card rendering skipped ({e})", err=True)
 
-    if result.overall_verdict == "RED":
-        typer.echo("  [!] Trifecta Detected: Agent had private secrets, untrusted input, and outbound network in the same session.")
-    elif result.overall_verdict == "YELLOW":
-        typer.echo("  [i] Partial Overlap: Two vectors detected in the same session.")
-    else:
-        typer.echo("  [✓] Safe: No multi-vector exfiltration overlap detected.")
+
+# ---------------------------------------------------------------------------
+# Command: `receiptd verify-card` (Signature & Digest Verification)
+# ---------------------------------------------------------------------------
+
+@app.command("verify-card")
+def verify_card(
+    card_json: str = typer.Argument(..., help="Path to signed card JSON file."),
+) -> None:
+    """Verify an Ed25519 signed Trifecta Card JSON document."""
+    from receiptd.card.signing import verify_card_file
+
+    ok, message = verify_card_file(card_json)
+    typer.echo(message)
+    if not ok:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -436,5 +462,15 @@ def run(
     )
 
 
+def main(argv=None) -> int:
+    """Entrypoint supporting programmatic and CLI invocations."""
+    if argv is not None:
+        from typer.testing import CliRunner
+        runner = CliRunner()
+        res = runner.invoke(app, argv, catch_exceptions=False)
+        return res.exit_code
+    return app()
+
+
 if __name__ == "__main__":
-    app()
+    main()
