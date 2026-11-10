@@ -86,7 +86,9 @@ Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Recei
 ```
 
 ### 2. Stop Gate: Block "Done" When Tests Fail
-When the agent attempts to stop or declare task completion, Receiptd runs your verification suite. If tests fail, it exits with code `2`—preventing premature completion, feeding the test diagnostics back into the model prompt to fix, and appending a cryptographic rejection receipt:
+When the agent attempts to stop or declare task completion, Receiptd runs your verification suite. If tests fail, it exits with code `2`—preventing premature completion, feeding the test diagnostics back into the model prompt to fix, and appending a cryptographic rejection receipt.
+
+When Claude Code sets `stop_hook_active: true`, Receiptd tracks session retries in `~/.receiptd/stop_gate_state.json` up to a configurable `--max-retries` cap (default: 3). If the agent cannot fix the tests within 3 attempts, Receiptd exits `0` and records a signed `gave_up` receipt to prevent runaway retry loops.
 
 ```bash
 # Run stop gate directly or via Claude Code Stop hook:
@@ -97,10 +99,22 @@ $ receiptd stop-gate --test-cmd "pytest"
   └─ Action Required: Fix failing tests before completing this task.
 ```
 
+### 3. Merkle Checkpoints & Public Key Export
+
+Receiptd writes a signed Merkle checkpoint every 100 receipts (configurable via `--checkpoint-interval` or `RECEIPTD_CHECKPOINT_INTERVAL`) and at session completion / Stop hook execution. Checkpoints freeze receipt ranges `[from_seq..to_seq]` with a binary SHA-256 Merkle root signed with Ed25519.
+
+Export your public key for offline verifiers:
+```bash
+$ receiptd pubkey
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAu3s5oprSq2Lv+5cilcOx/79VaH5zITetOznGnhUlBDE=
+-----END PUBLIC KEY-----
+```
+
 Verify the cryptographic integrity of any agent session offline:
 
 ```bash
-$ receiptd verify --ledger .birkin/receipts.jsonl --format table
+$ receiptd verify --ledger .receiptd/receipts.jsonl --format table
 ┌────────────────────────┬──────────────────────────────────────────┐
 │ Total Frames Verified  │ 18                                       │
 │ Blocked Fail-Closed    │ 3                                        │
@@ -108,6 +122,8 @@ $ receiptd verify --ledger .birkin/receipts.jsonl --format table
 │ 0 Tampered Frames      │ Verified offline in 0.42ms               │
 └────────────────────────┴──────────────────────────────────────────┘
 ```
+If receipts exist after the last checkpoint, `receiptd verify` warns:
+`"Warning: Uncheckpointed tail: Missing receipts after the last checkpoint cannot be proven."`
 
 ### Test Against the Vulnerable Agent Fixture
 
@@ -234,6 +250,21 @@ Every evaluated tool call emits a deterministic receipt verifiable offline via `
   }
 }
 ```
+
+---
+
+## What a Receipt Does Not Prove
+
+Cryptographic authorization receipts provide deterministic, non-repudiable audit logs of actions evaluated by Receiptd. However, understanding their explicit security boundaries is critical:
+
+1. **Actions Bypassing the Hook:**
+   Receipts only prove what passes through the hook. If a process runs outside Claude Code (e.g. direct shell execution, developer terminals, or unhooked subagents), or if hooks in `.claude/settings.json` are unconfigured or bypassed, no receipt is emitted. Receipts prove that governed actions occurred; they cannot prove that ungated external side channels were never touched.
+
+2. **Compromised Signing Keys:**
+   Every receipt is signed with the local Ed25519 private key stored in `~/.receiptd/receiptd_ed25519.pem` (mode 0600). If an adversary gains root/filesystem access to this file, they can forge signatures over arbitrary payloads. Offline verifiers prove signature authenticity against the public key, not the physical security of the host where the key was stored.
+
+3. **Model Identity & Intent:**
+   A signed receipt proves that a specific tool name and canonical argument hash were evaluated against the policy ruleset and either allowed or blocked. It does **not** prove *which* model weights generated the request, whether the LLM was under prompt injection, or what latent reasoning led to the tool invocation.
 
 ---
 
