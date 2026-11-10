@@ -50,9 +50,17 @@ def sha256_hex(data: str | bytes) -> str:
 
 
 def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
-    tool_name = str(payload.get("tool_name", ""))
-    tool_input = canonicalize_jcs(payload.get("tool_input", {}))
-    combined = f"{tool_name} {tool_input}"
+    tool_name = payload.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return True, 100, ["MISSING_REQUIRED_FIELD"]
+
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return True, 100, ["MISSING_REQUIRED_FIELD"]
+
+    tool_name = tool_name.strip()
+    tool_input_jcs = canonicalize_jcs(tool_input)
+    combined = f"{tool_name} {tool_input_jcs}"
 
     score = 10
     triggered = []
@@ -75,6 +83,9 @@ def main() -> int:
             return 2
 
         payload = json.loads(raw_stdin)
+        if not isinstance(payload, dict):
+            sys.stderr.write("[RECEIPTD FAIL-CLOSED] Payload must be a JSON object.\n")
+            return 2
         blocked, score, triggered = evaluate_payload(payload)
         decision = "deny" if blocked else "allow"
         reason = f"triggered rules: {', '.join(triggered)}" if blocked else "allowed"
