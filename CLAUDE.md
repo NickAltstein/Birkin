@@ -12,10 +12,9 @@ Receiptd is an MIT-licensed, fail-closed authorization gate for AI agent tool ca
 * `receiptd/audit.py`: hash-chained ledger and Merkle checkpoints.
 * `receiptd/verify.py`: offline verification (`receiptd verify`).
 * `receiptd/policy.py`, `engine.py`, `models.py`: policy rules and evaluation.
-* `receiptd/trifecta.py`: `receiptd card` (unsigned session-log classifier).
+* `receiptd/card/`: `receiptd card` (signed Trifecta hazard card) and `receiptd verify-card`.
 * `receiptd/cli.py`: Typer CLI. `birkin` is a backward-compatible alias of `receiptd`.
-
-**Status note (delete once on origin/main):** hook Ed25519 signing, Merkle checkpoints, the `stop_hook_active` retry cap, and the Linux symlink deny are committed locally but not yet pushed. On origin/main the hook only SHA-256 hash-chains decisions. Never assume the hook emits signed receipts unless `pytest -q -rs` on this checkout proves it.
+* `birkin/`: Backward-compatibility shim mapping all legacy `birkin.*` imports and CLI hooks to `receiptd`.
 
 ## Stack
 
@@ -64,7 +63,7 @@ pytest -q -rs
 * Only document what the code does on main. No invented metrics.
 * Receiptd cannot see or prove which model answered. Never claim it does.
 * Canonicalization is sorted-key compact JSON; do not call it RFC 8785 unless it is implemented.
-* The Trifecta card is unsigned; there is no `verify-card` command unless you build and test one.
+* The Trifecta card is Ed25519-signed; verification is performed offline via `receiptd verify-card <card.json>`.
 
 ## Model use
 
