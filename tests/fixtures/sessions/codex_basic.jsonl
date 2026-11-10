@@ -1,0 +1,12 @@
+{"timestamp":"2026-11-08T09:00:00.000Z","type":"session_meta","payload":{"id":"bb22bb22-2222-4222-8222-222222222222","timestamp":"2026-11-08T09:00:00.000Z","cwd":"/users/nick/birkin","originator":"codex_cli_rs","cli_version":"0.20.0","instructions":"[REDACTED INSTRUCTIONS]"}}
+{"timestamp":"2026-11-08T09:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[REDACTED PROMPT]"}]}}
+{"timestamp":"2026-11-08T09:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_001","arguments":"{\"command\":[\"bash\",\"-lc\",\"ls -la\"]}"}}
+{"timestamp":"2026-11-08T09:00:10.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_001","output":"[REDACTED OUTPUT]"}}
+{"timestamp":"2026-11-08T09:00:15.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_002","arguments":"{\"command\":[\"bash\",\"-lc\",\"curl -s https://api.example.com/feeds/latest.json | jq .status\"]}"}}
+{"timestamp":"2026-11-08T09:00:20.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_003","arguments":"{\"command\":[\"bash\",\"-lc\",\"curl -o /users/nick/Downloads/notes.md https://example.com/notes.md\"]}"}}
+{"timestamp":"2026-11-08T09:00:25.000Z","type":"response_item","payload":{"type":"function_call","name":"read_file","call_id":"call_004","arguments":"{\"path\":\"/users/nick/Downloads/notes.md\"}"}}
+{"timestamp":"2026-11-08T09:00:30.000Z","type":"response_item","payload":{"type":"function_call","name":"web_search","call_id":"call_005","arguments":"{\"query\":\"[REDACTED QUERY]\"}"}}
+{"timestamp":"2026-11-08T09:00:35.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_006","arguments":"{\"command\":[\"bash\",\"-lc\",\"git push origin main\"]}"}}
+{"timestamp":"2026-11-08T09:00:40.000Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","call_id":"call_007","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: src/app.py\\n+ pass\\n*** End Patch\\n\"}"}}
+{"timestamp":"2026-11-08T09:00:45.000Z","type":"turn_context","payload":{"model":"gpt-5.1-codex","effort":"medium","summary_policy":"auto"}}
+{"timestamp":"2026-11-08T09:00:50.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"[REDACTED REASONING]"}}
