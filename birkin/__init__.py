@@ -7,7 +7,6 @@ submodules (e.g. `birkin.crypto`, `birkin.verify`, `birkin.adapters`) via `sys.m
 """
 
 import importlib
-import pkgutil
 import sys
 
 import receiptd
@@ -18,52 +17,45 @@ __version__ = getattr(receiptd, "__version__", "1.0.0")
 
 _this_module = sys.modules[__name__]
 
+# Submodule aliases mapped into sys.modules so legacy imports work.
+_SUBMODULES = [
+    "adapter",
+    "adapters",
+    "adapters.grok_bot",
+    "adapters.hermes",
+    "adapters.infini_gateway",
+    "adapters.null_agent",
+    "audit",
+    "card",
+    "card.classifier",
+    "card.models",
+    "card.parser",
+    "card.pipeline",
+    "card.redact",
+    "card.render_card",
+    "card.render_terminal",
+    "card.signing",
+    "card.verdict",
+    "crypto",
+    "engine",
+    "ledger",
+    "models",
+    "policy",
+    "trifecta",
+    "verify",
+]
 
-def _map_submodules() -> None:
-    prefix = receiptd.__name__ + "."
-    for mod_info in pkgutil.walk_packages(receiptd.__path__, prefix):
-        sub_name = mod_info.name[len(prefix):]
-        try:
-            target_mod = importlib.import_module(mod_info.name)
-        except Exception:
-            continue
-
-        birkin_mod_name = f"birkin.{sub_name}"
-        sys.modules[birkin_mod_name] = target_mod
-
-        # Attach to parent package in the birkin module tree
-        parts = sub_name.split(".")
-        current = _this_module
-        for part in parts[:-1]:
-            current = getattr(current, part, None)
-            if current is None:
-                break
-        if current is not None:
-            setattr(current, parts[-1], target_mod)
-
-
-_map_submodules()
-
-
-class _BirkinShimFinder:
-    """MetaPathFinder fallback to dynamically map any birkin.* import to receiptd.*"""
-
-    @classmethod
-    def find_spec(cls, fullname, path=None, target=None):
-        if fullname.startswith("birkin."):
-            sub = fullname[len("birkin."):]
-            target_name = f"receiptd.{sub}"
-            try:
-                mod = importlib.import_module(target_name)
-                sys.modules[fullname] = mod
-                return mod.__spec__
-            except ModuleNotFoundError:
-                return None
-        return None
-
-
-if _BirkinShimFinder not in sys.meta_path:
-    sys.meta_path.insert(0, _BirkinShimFinder)
+for _sub in _SUBMODULES:
+    _target = importlib.import_module(f"receiptd.{_sub}")
+    sys.modules[f"birkin.{_sub}"] = _target
+    _parts = _sub.split(".")
+    _curr = _this_module
+    for _part in _parts[:-1]:
+        _curr = getattr(_curr, _part, None)
+        if _curr is None:
+            break
+    if _curr is not None:
+        setattr(_curr, _parts[-1], _target)
 
 
 def __getattr__(name: str):
