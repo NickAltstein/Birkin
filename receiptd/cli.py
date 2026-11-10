@@ -138,13 +138,30 @@ def init(
         # Avoid duplicate hook registration
         if not any(isinstance(h, dict) and h.get("matcher") == hook_entry["matcher"] for h in pre_tool_use):
             pre_tool_use.append(hook_entry)
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2)
             typer.echo(f"  [✓] Wired PreToolUse deterministic gate into {settings_path}")
         else:
             typer.echo("  [i] PreToolUse hook already registered in .claude/settings.json")
 
-        # 3. Create audit skill placeholder
+        # 3. Wire Claude Code Stop Hook (exit 2 prevents completion while tests fail)
+        stop_hooks = hooks_config.setdefault("Stop", [])
+        stop_entry = {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "python3 -m receiptd.hooks.claude_code_stop_gate --ledger .birkin/receipts.jsonl",
+                }
+            ]
+        }
+        if not stop_hooks:
+            stop_hooks.append(stop_entry)
+            typer.echo(f"  [✓] Wired Stop deterministic completion gate into {settings_path}")
+        else:
+            typer.echo("  [i] Stop hook already registered in .claude/settings.json")
+
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+
+        # 4. Create audit skill placeholder
         skill_dir = ".claude/skills/birkin-audit"
         os.makedirs(skill_dir, exist_ok=True)
         skill_path = os.path.join(skill_dir, "SKILL.md")
@@ -354,6 +371,19 @@ def attack(
     else:
         typer.echo(f"error: unknown attack {n}", err=True)
         raise typer.Exit(code=2)
+
+
+@app.command("stop-gate")
+def stop_gate_cmd(
+    test_cmd: Optional[str] = typer.Option(None, "--test-cmd", "-t", help="Verification command to execute (defaults to auto-detection)."),
+    ledger: str = typer.Option(".receiptd/receipts.jsonl", "--ledger", "-l", help="Path to audit ledger."),
+    timeout: int = typer.Option(120, "--timeout", help="Test timeout in seconds."),
+) -> None:
+    """Gate agent completion: exit 0 if tests pass, exit 2 if tests fail, recording signed receipts."""
+    from .hooks.claude_code_stop_gate import run_stop_gate
+    code = run_stop_gate(test_cmd=test_cmd, ledger_path=ledger, timeout_sec=timeout)
+    if code != 0:
+        raise typer.Exit(code=code)
 
 
 @app.command()
