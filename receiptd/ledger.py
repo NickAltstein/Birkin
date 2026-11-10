@@ -16,6 +16,7 @@ from .crypto import (
     canonical_json,
     canonical_json_subset,
     get_pubkey_id,
+    get_signing_key,
     merkle_root,
     sha256_hex,
 )
@@ -246,56 +247,67 @@ def record_ledger_anchor(
     r_hash: str,
     ledger_path: str | Path | None = None,
     key_dir: Path | None = None,
+    sk: SigningKey | None = None,
 ) -> None:
-    """Record the highest sequence number and hash in the local state store under RECEIPTD_KEY_DIR."""
+    """Record the highest sequence number, hash, and Ed25519 signature in ledger_state.json.
+
+    Uses an atomic write via a temporary file and os.replace with 0600 permissions.
+    """
+    import time
     kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+    kd.mkdir(parents=True, exist_ok=True)
     try:
-        kd.mkdir(parents=True, exist_ok=True)
-        state_file = kd / "ledger_state.json"
-        data: dict[str, Any] = {}
-        if state_file.exists():
-            try:
-                data = json.loads(state_file.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-        data["last_seq"] = int(seq)
-        data["last_hash"] = str(r_hash)
-        if ledger_path:
-            norm = str(Path(ledger_path).resolve())
-            data["ledger_path"] = norm
-            if "ledgers" not in data or not isinstance(data["ledgers"], dict):
-                data["ledgers"] = {}
-            data["ledgers"][norm] = {"last_seq": int(seq), "last_hash": str(r_hash)}
-        state_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        try:
-            os.chmod(state_file, 0o600)
-        except OSError:
-            pass
+        os.chmod(kd, 0o700)
     except OSError:
         pass
+
+    if sk is None:
+        sk = get_signing_key(key_dir=kd)
+
+    norm_path = str(Path(ledger_path).resolve()) if ledger_path else ""
+    signable = {
+        "last_hash": str(r_hash),
+        "last_seq": int(seq),
+        "ledger_path": norm_path,
+    }
+    canonical_bytes = canonical_json(signable)
+    sig = sk.sign(canonical_bytes)
+
+    payload = {
+        "ledger_path": norm_path,
+        "last_seq": int(seq),
+        "last_hash": str(r_hash),
+        "sig": sig,
+    }
+
+    state_file = kd / "ledger_state.json"
+    temp_file = kd / f".ledger_state.tmp.{os.getpid()}.{time.time_ns()}"
+    try:
+        temp_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.chmod(temp_file, 0o600)
+        except OSError:
+            pass
+        os.replace(temp_file, state_file)
+    finally:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
 
 
 def read_ledger_anchor(
     ledger_path: str | Path | None = None,
     key_dir: Path | None = None,
-) -> tuple[int, str] | None:
-    """Read the last recorded sequence number and hash from local state under RECEIPTD_KEY_DIR."""
+) -> dict[str, Any] | None:
+    """Read the signed ledger anchor state dictionary from local state under RECEIPTD_KEY_DIR."""
     kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
     for name in ("ledger_state.json", "state.json"):
         state_file = kd / name
         if state_file.exists():
             try:
-                data = json.loads(state_file.read_text(encoding="utf-8"))
-                if ledger_path:
-                    norm = str(Path(ledger_path).resolve())
-                    ledgers = data.get("ledgers", {})
-                    if isinstance(ledgers, dict) and norm in ledgers:
-                        rec = ledgers[norm]
-                        return int(rec["last_seq"]), str(rec["last_hash"])
-                    if "ledger_path" in data and data["ledger_path"] != norm:
-                        return None
-                if "last_seq" in data and "last_hash" in data:
-                    return int(data["last_seq"]), str(data["last_hash"])
+                return json.loads(state_file.read_text(encoding="utf-8"))
             except Exception:
                 pass
     return None

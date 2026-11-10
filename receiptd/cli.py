@@ -240,10 +240,6 @@ def _verify_ledger_file(
 
     typer.echo(f"Auditing cryptographic ledger: {ledger_path}...\n")
 
-    anchor = None
-    if not allow_unanchored:
-        anchor = read_ledger_anchor(ledger_path=ledger_path, key_dir=key_dir)
-
     entries = []
     with open(ledger_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -257,22 +253,38 @@ def _verify_ledger_file(
                 return False
 
     if not entries:
-        if anchor and anchor[0] > 0:
-            typer.echo("=" * 65)
-            typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor[0]}")
-            typer.echo("=" * 65)
-            typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
-            return False
+        if not allow_unanchored:
+            kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+            state_file = kd / "ledger_state.json"
+            if not state_file.exists():
+                legacy_file = kd / "state.json"
+                if legacy_file.exists():
+                    state_file = legacy_file
+            if state_file.exists():
+                try:
+                    anchor_data = json.loads(state_file.read_text(encoding="utf-8"))
+                    anchor_seq = int(anchor_data.get("last_seq", 0))
+                    if anchor_seq > 0:
+                        typer.echo("=" * 65)
+                        typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor_seq}")
+                        typer.echo("=" * 65)
+                        typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
+                        return False
+                except Exception:
+                    pass
         typer.echo("Ledger is empty. No execution frames recorded.")
         return True
 
     # Resolve public key for verifying Ed25519 signatures
+    kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
     pubkey_target = pubkey
     if not pubkey_target:
         pubkey_target = os.environ.get("RECEIPTD_PUBLIC_KEY")
     if not pubkey_target:
         try:
-            pubkey_target = get_public_key_pem()
+            pubkey_target = get_public_key_pem(key_dir=kd)
+        except Exception:
+            pubkey_target = None
         except Exception:
             pubkey_target = None
 
@@ -418,22 +430,67 @@ def _verify_ledger_file(
         typer.echo(compute_ascii_table(headers, table_rows))
         typer.echo()
 
-    if not tamper_detected and anchor:
-        anchor_seq, anchor_hash = anchor
-        if receipt_count < anchor_seq:
-            tamper_detected = True
-            tamper_reason = (
-                f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
-                f"but recorded state expects sequence #{anchor_seq}"
-            )
-        elif anchor_seq in receipts_by_seq:
-            actual_hash = receipts_by_seq[anchor_seq]["hash"]
-            if actual_hash != anchor_hash:
+    if not tamper_detected and not allow_unanchored:
+        kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+        state_file = kd / "ledger_state.json"
+        if not state_file.exists():
+            legacy_file = kd / "state.json"
+            if legacy_file.exists():
+                state_file = legacy_file
+
+        if not state_file.exists():
+            if receipt_count > 0:
                 tamper_detected = True
                 tamper_reason = (
-                    f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
-                    f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                    f"Missing signed ledger anchor: ledger has {receipt_count} receipts "
+                    f"but anchor state file {state_file} not found"
                 )
+        else:
+            try:
+                anchor_data = json.loads(state_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                tamper_detected = True
+                tamper_reason = f"Unreadable or corrupted ledger anchor in {state_file}: {exc}"
+                anchor_data = None
+
+            if anchor_data is not None:
+                sig = anchor_data.get("sig")
+                if not sig:
+                    tamper_detected = True
+                    tamper_reason = f"Ledger anchor in {state_file} is unsigned (missing Ed25519 signature)"
+                else:
+                    signable = {
+                        "last_hash": str(anchor_data.get("last_hash", "")),
+                        "last_seq": int(anchor_data.get("last_seq", 0)),
+                        "ledger_path": str(anchor_data.get("ledger_path", "")),
+                    }
+                    canonical_bytes = canonical_json(signable)
+                    if not pubkey_target or not verify_ed25519(pubkey_target, sig, canonical_bytes):
+                        tamper_detected = True
+                        tamper_reason = f"Invalid Ed25519 signature on ledger anchor in {state_file}"
+                    else:
+                        anchor_path = anchor_data.get("ledger_path")
+                        norm_ledger = str(ledger_path.resolve())
+                        if anchor_path and anchor_path != norm_ledger:
+                            tamper_detected = True
+                            tamper_reason = f"Ledger anchor path mismatch: recorded {anchor_path}, verifying {norm_ledger}"
+                        else:
+                            anchor_seq = int(anchor_data.get("last_seq", 0))
+                            anchor_hash = str(anchor_data.get("last_hash", ""))
+                            if receipt_count < anchor_seq:
+                                tamper_detected = True
+                                tamper_reason = (
+                                    f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
+                                    f"but recorded state expects sequence #{anchor_seq}"
+                                )
+                            elif receipt_count > 0 and anchor_seq in receipts_by_seq:
+                                actual_hash = receipts_by_seq[anchor_seq]["hash"]
+                                if actual_hash != anchor_hash:
+                                    tamper_detected = True
+                                    tamper_reason = (
+                                        f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
+                                        f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                                    )
 
     if tamper_detected:
         typer.echo("=" * 65)

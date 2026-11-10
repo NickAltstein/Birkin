@@ -61,7 +61,7 @@ def test_delete_last_receipt_detected_and_allow_unanchored(tmp_path: Path, monke
     )
     append_ledger_entry(ledger, r2)
     # Record anchor at seq 2
-    record_ledger_anchor(2, r2["hash"], key_dir=key_dir)
+    record_ledger_anchor(2, r2["hash"], ledger_path=ledger, key_dir=key_dir, sk=sk)
 
     pub_pem = sk.public_pem_bytes.decode("ascii")
 
@@ -95,10 +95,12 @@ def test_empty_ledger_with_anchor_fails(tmp_path: Path, monkeypatch):
     ledger.write_text("", encoding="utf-8")
 
     # Record anchor state indicating sequence #1 was previously written
-    record_ledger_anchor(1, "a" * 64, key_dir=key_dir)
+    sk = SigningKey.generate()
+    record_ledger_anchor(1, "a" * 64, ledger_path=ledger, key_dir=key_dir, sk=sk)
+    pub_pem = sk.public_pem_bytes.decode("ascii")
 
     # Without --allow-unanchored: MUST fail with exit 2 naming sequence #1
-    res = runner.invoke(app, ["verify", "--ledger", str(ledger)])
+    res = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", pub_pem])
     assert res.exit_code == 2
     assert "sequence #1" in res.output
     assert "TAMPER DETECTED" in res.output
@@ -159,3 +161,240 @@ def test_end_to_end_gate_anchor_and_tail_truncation(tmp_path: Path, monkeypatch)
     # With --allow-unanchored passes
     res_unanchored = runner.invoke(app, ["verify", "--ledger", str(ledger), "--allow-unanchored"])
     assert res_unanchored.exit_code == 0
+
+
+def test_rewrite_allow_as_unsigned_deny_update_anchor_fails(tmp_path: Path, monkeypatch):
+    """Rewrite last allow as unsigned signing_error deny and update anchor hash -> exit 2."""
+    from receiptd.ledger import build_unsigned_signing_error_receipt
+
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    ledger = tmp_path / "receipts.jsonl"
+    sk = SigningKey.generate()
+
+    # Create legitimate allow receipt
+    allow_receipt = build_signed_receipt(
+        sk=sk,
+        v=1,
+        seq=1,
+        ts="2026-11-10T12:00:00Z",
+        session_id="test",
+        tool="Bash",
+        args_sha256="0" * 64,
+        decision="allow",
+        rule_ids=[],
+        blast_radius=0,
+        reason="ok",
+        policy_sha256="0" * 64,
+        prev_hash=GENESIS_HASH,
+    )
+    append_ledger_entry(ledger, allow_receipt)
+    record_ledger_anchor(1, allow_receipt["hash"], ledger_path=ledger, key_dir=key_dir, sk=sk)
+
+    pub_pem = sk.public_pem_bytes.decode("ascii")
+
+    # Legitimate ledger passes
+    res_ok = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", pub_pem])
+    assert res_ok.exit_code == 0
+
+    # Attacker rewrites receipt as an unsigned deny with signing_error: true
+    forged_deny = build_unsigned_signing_error_receipt(
+        v=1,
+        seq=1,
+        ts="2026-11-10T12:00:00Z",
+        session_id="test",
+        tool="Bash",
+        args_sha256="0" * 64,
+        decision="deny",
+        rule_ids=["ATTACK"],
+        blast_radius=100,
+        reason="rewritten deny",
+        policy_sha256="0" * 64,
+        prev_hash=GENESIS_HASH,
+    )
+    ledger.write_text(json.dumps(forged_deny) + "\n", encoding="utf-8")
+
+    # Attacker also updates anchor hash to match forged_deny["hash"]
+    state_file = key_dir / "ledger_state.json"
+    anchor = json.loads(state_file.read_text(encoding="utf-8"))
+    anchor["last_hash"] = forged_deny["hash"]
+    state_file.write_text(json.dumps(anchor), encoding="utf-8")
+
+    # Signature on anchor is now invalid because it was signed over original hash!
+    res_fail = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", pub_pem])
+    assert res_fail.exit_code == 2
+    assert "Invalid Ed25519 signature on ledger anchor" in res_fail.output or "TAMPER DETECTED" in res_fail.output
+
+
+def test_delete_anchor_and_last_receipt_fails(tmp_path: Path, monkeypatch):
+    """Delete the anchor + the last receipt -> exit 2."""
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    ledger = tmp_path / "receipts.jsonl"
+    sk = SigningKey.generate()
+
+    r1 = build_signed_receipt(
+        sk=sk,
+        v=1,
+        seq=1,
+        ts="2026-11-10T12:00:00Z",
+        session_id="test",
+        tool="Read",
+        args_sha256="0" * 64,
+        decision="allow",
+        rule_ids=[],
+        blast_radius=0,
+        reason="ok",
+        policy_sha256="0" * 64,
+        prev_hash=GENESIS_HASH,
+    )
+    append_ledger_entry(ledger, r1)
+
+    r2 = build_signed_receipt(
+        sk=sk,
+        v=1,
+        seq=2,
+        ts="2026-11-10T12:00:01Z",
+        session_id="test",
+        tool="Bash",
+        args_sha256="0" * 64,
+        decision="allow",
+        rule_ids=[],
+        blast_radius=0,
+        reason="ok",
+        policy_sha256="0" * 64,
+        prev_hash=r1["hash"],
+    )
+    append_ledger_entry(ledger, r2)
+    record_ledger_anchor(2, r2["hash"], ledger_path=ledger, key_dir=key_dir, sk=sk)
+
+    pub_pem = sk.public_pem_bytes.decode("ascii")
+
+    # Delete receipt #2 from ledger (leaving receipt #1)
+    ledger.write_text(json.dumps(r1) + "\n", encoding="utf-8")
+
+    # Delete anchor state file completely
+    state_file = key_dir / "ledger_state.json"
+    state_file.unlink()
+
+    # Verify must fail with exit 2 because ledger has 1 receipt but anchor is missing
+    res = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", pub_pem])
+    assert res.exit_code == 2
+    assert "Missing signed ledger anchor" in res.output or "TAMPER DETECTED" in res.output
+
+
+def test_corrupt_anchor_fails(tmp_path: Path, monkeypatch):
+    """Corrupt the anchor -> exit 2."""
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    ledger = tmp_path / "receipts.jsonl"
+    sk = SigningKey.generate()
+
+    r1 = build_signed_receipt(
+        sk=sk,
+        v=1,
+        seq=1,
+        ts="2026-11-10T12:00:00Z",
+        session_id="test",
+        tool="Read",
+        args_sha256="0" * 64,
+        decision="allow",
+        rule_ids=[],
+        blast_radius=0,
+        reason="ok",
+        policy_sha256="0" * 64,
+        prev_hash=GENESIS_HASH,
+    )
+    append_ledger_entry(ledger, r1)
+    record_ledger_anchor(1, r1["hash"], ledger_path=ledger, key_dir=key_dir, sk=sk)
+
+    pub_pem = sk.public_pem_bytes.decode("ascii")
+
+    # Corrupt anchor file with invalid JSON
+    state_file = key_dir / "ledger_state.json"
+    state_file.write_text("{corrupt: json not valid", encoding="utf-8")
+
+    res = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", pub_pem])
+    assert res.exit_code == 2
+    assert "Unreadable or corrupted ledger anchor" in res.output or "TAMPER DETECTED" in res.output
+
+
+def test_allow_unanchored_passes_copied_ledger(tmp_path: Path, monkeypatch):
+    """--allow-unanchored still passes a copied ledger."""
+    import shutil
+
+    key_dir = tmp_path / "keys"
+    monkeypatch.setenv("RECEIPTD_KEY_DIR", str(key_dir))
+    ledger = tmp_path / "receipts.jsonl"
+    sk = SigningKey.generate()
+
+    r1 = build_signed_receipt(
+        sk=sk,
+        v=1,
+        seq=1,
+        ts="2026-11-10T12:00:00Z",
+        session_id="test",
+        tool="Read",
+        args_sha256="0" * 64,
+        decision="allow",
+        rule_ids=[],
+        blast_radius=0,
+        reason="ok",
+        policy_sha256="0" * 64,
+        prev_hash=GENESIS_HASH,
+    )
+    append_ledger_entry(ledger, r1)
+    record_ledger_anchor(1, r1["hash"], ledger_path=ledger, key_dir=key_dir, sk=sk)
+
+    pub_pem = sk.public_pem_bytes.decode("ascii")
+
+    # Copy ledger to a different location (different path, no local anchor matching it)
+    copied_ledger = tmp_path / "copied_receipts.jsonl"
+    shutil.copy(ledger, copied_ledger)
+
+    # Without --allow-unanchored: fails due to path mismatch or missing anchor
+    res_fail = runner.invoke(app, ["verify", "--ledger", str(copied_ledger), "--pubkey", pub_pem])
+    assert res_fail.exit_code == 2
+
+    # With --allow-unanchored: passes
+    res_pass = runner.invoke(app, ["verify", "--ledger", str(copied_ledger), "--pubkey", pub_pem, "--allow-unanchored"])
+    assert res_pass.exit_code == 0
+    assert "✓ VERDICT: AUTHENTIC" in res_pass.output
+
+
+def test_gate_denies_if_anchor_write_fails(tmp_path: Path):
+    """If writing the anchor fails, the gate denies (exit 2)."""
+    import subprocess
+    import sys
+
+    key_dir = tmp_path / "keys"
+    ledger = tmp_path / "receipts.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "RECEIPTD_KEY_DIR": str(key_dir),
+    }
+
+    key_dir.mkdir(parents=True, exist_ok=True)
+    sk = SigningKey.generate()
+    (key_dir / "receiptd_ed25519.pem").write_bytes(sk.pem_bytes)
+    (key_dir / "receiptd_ed25519.pub.pem").write_bytes(sk.public_pem_bytes)
+
+    # Create ledger_state.json as a directory so writing to it as a file fails
+    (key_dir / "ledger_state.json").mkdir()
+
+    payload = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "test.txt"},
+        "session_id": "s-anchor-fail",
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "receiptd.hooks.claude_code_gate", "--ledger", str(ledger)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    # Must deny with exit 2
+    assert proc.returncode == 2

@@ -87,7 +87,7 @@ def test_ledger_tamper_detection(tmp_path: Path):
     pub_pem = sk.public_pem_bytes.decode("ascii")
 
     # 1. Authentic ledger passes
-    assert _verify_ledger_file(ledger, pubkey=pub_pem) is True
+    assert _verify_ledger_file(ledger, pubkey=pub_pem, allow_unanchored=True) is True
 
     # 2. 1-byte tamper breaks verification
     lines = ledger.read_text(encoding="utf-8").strip().split("\n")
@@ -96,7 +96,7 @@ def test_ledger_tamper_detection(tmp_path: Path):
     lines[1] = json.dumps(tampered_entry)
     ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    assert _verify_ledger_file(ledger, pubkey=pub_pem) is False
+    assert _verify_ledger_file(ledger, pubkey=pub_pem, allow_unanchored=True) is False
 
 
 @pytest.mark.parametrize(

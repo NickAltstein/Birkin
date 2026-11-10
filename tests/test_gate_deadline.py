@@ -119,7 +119,7 @@ def test_hang_in_key_load_denies_with_receipt(tmp_path: Path, module: str):
     # verify also reads the key dir; drop the pipe so it doesn't hang too.
     key_pipe.unlink()
     verify = subprocess.run(
-        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger)],
+        [sys.executable, "-m", "receiptd", "verify", "--ledger", str(ledger), "--allow-unanchored"],
         capture_output=True,
         text=True,
         cwd=tmp_path,

@@ -63,7 +63,7 @@ def test_strip_sig_from_signed_receipt_fails_verify(tmp_path: Path, monkeypatch)
     _recompute_hash(r1)
     append_ledger_entry(ledger, r1)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code == 2
     assert "sequence #1" in result.output
     assert "TAMPER DETECTED" in result.output
@@ -102,7 +102,7 @@ def test_rewrite_deny_as_allow_no_sig_fails_verify(tmp_path: Path, monkeypatch):
     _recompute_hash(deny_receipt)
     append_ledger_entry(ledger, deny_receipt)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code == 2
     assert "sequence #1" in result.output
     assert "TAMPER DETECTED" in result.output
@@ -131,7 +131,7 @@ def test_unsigned_signing_error_deny_accepted(tmp_path: Path, monkeypatch):
     )
     append_ledger_entry(ledger, unsigned_deny)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code == 0
     assert "✓ VERDICT: AUTHENTIC" in result.output
     assert "Unsigned deny receipts accepted: 1" in result.output
@@ -160,7 +160,7 @@ def test_unsigned_signing_error_allow_fails_verify(tmp_path: Path, monkeypatch):
     )
     append_ledger_entry(ledger, forged_allow)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code == 2
     assert "sequence #1" in result.output
     assert "TAMPER DETECTED" in result.output
