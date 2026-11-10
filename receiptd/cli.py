@@ -504,11 +504,22 @@ def card(
 @app.command("verify-card")
 def verify_card(
     card_json: str = typer.Argument(..., help="Path to signed card JSON file."),
+    pubkey_id: Optional[str] = typer.Option(None, "--pubkey-id", help="Expected 64-character hex ID of the signer public key."),
+    pubkey_file: Optional[str] = typer.Option(None, "--pubkey-file", help="Path to PEM file of the expected signer public key."),
 ) -> None:
     """Verify an Ed25519 signed Trifecta Card JSON document."""
     from receiptd.card.signing import verify_card_file
+    from receiptd.crypto import get_pubkey_id
 
-    ok, message = verify_card_file(card_json)
+    expected_id = pubkey_id.strip() if pubkey_id else None
+    if pubkey_file:
+        p = Path(pubkey_file)
+        if not p.is_file():
+            typer.echo(f"error: public key file not found: {pubkey_file}", err=True)
+            raise typer.Exit(code=1)
+        expected_id = get_pubkey_id(p.read_text(encoding="utf-8"))
+
+    ok, message = verify_card_file(card_json, expected_pubkey_id=expected_id)
     typer.echo(message)
     if not ok:
         raise typer.Exit(code=1)
