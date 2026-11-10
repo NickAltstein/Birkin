@@ -40,6 +40,8 @@ pip install -e .
 ./demo.sh
 ```
 
+A separate static page, [birkin-sandbox](https://github.com/NickAltstein/birkin-sandbox), runs the same class of check in the browser: WebCrypto Ed25519 (HMAC-SHA256 if Ed25519 is unavailable), lexicographic JSON, a Merkle root, and a one-byte parameter flip that fail-closes. It does not replace `birkin verify`. Tool calls on that page are fixtures and are not executed.
+
 You will see, in order:
 
 1. A clean end-to-end run producing `VERDICT: AUTHENTIC`.
