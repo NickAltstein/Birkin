@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/receiptd-banner.png" alt="Receiptd Banner" width="680" />
+</p>
+
 # Receiptd
 
 **Cryptographic authorization receipts, 0.02ms in-process policy checks (~67ms CLI hook), and offline hash-chain verification for autonomous AI agents.**
