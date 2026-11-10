@@ -28,6 +28,7 @@ dependencies = [
     "cryptography>=42",
     "pydantic>=2.5",
     "typer>=0.9",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

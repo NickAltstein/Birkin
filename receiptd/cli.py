@@ -286,6 +286,45 @@ def verify(
 
 
 # ---------------------------------------------------------------------------
+# Command: `receiptd card` (Trifecta Risk Card)
+# ---------------------------------------------------------------------------
+
+@app.command("card")
+def card(
+    path: Optional[str] = typer.Option(None, "--path", "-p", help="Directory or file path to Claude Code / Codex session logs."),
+    days: int = typer.Option(30, "--days", "-d", help="Analysis time window in days (default: 30, use 0 for all)."),
+    out: str = typer.Option("receiptd-card.png", "--out", "-o", help="Output path for shareable PNG card."),
+    no_png: bool = typer.Option(False, "--no-png", help="Skip PNG rendering and print terminal card only."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Output verdict only (RED, YELLOW, GREEN)."),
+) -> None:
+    """Audit local agent session logs for the Trifecta hazard and generate a shareable card."""
+    from .trifecta import scan_agent_logs, render_terminal_card, render_png_card
+
+    result = scan_agent_logs(target_path=path, days=days)
+
+    if quiet:
+        typer.echo(result.overall_verdict)
+        return
+
+    # Print terminal card
+    typer.echo(render_terminal_card(result))
+
+    if not no_png:
+        try:
+            png_file = render_png_card(result, out_path=out)
+            typer.echo(f"  [✓] Shareable Trifecta Card exported to: {png_file}")
+        except Exception as e:
+            typer.echo(f"  [!] Note: PNG rendering skipped ({e})", err=True)
+
+    if result.overall_verdict == "RED":
+        typer.echo("  [!] Trifecta Detected: Agent had private secrets, untrusted input, and outbound network in the same session.")
+    elif result.overall_verdict == "YELLOW":
+        typer.echo("  [i] Partial Overlap: Two vectors detected in the same session.")
+    else:
+        typer.echo("  [✓] Safe: No multi-vector exfiltration overlap detected.")
+
+
+# ---------------------------------------------------------------------------
 # Additional Commands: demo, attack, keys, run
 # ---------------------------------------------------------------------------
 
