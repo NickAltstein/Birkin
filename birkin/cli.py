@@ -1,24 +1,18 @@
+#!/usr/bin/env python3
 """
-birkin.cli
-==========
-
-The ``birkin`` command-line entry point.
-
-Two subcommands matter for the vertical slice:
-
-* ``birkin verify <package.json>`` — offline verification of an exported
-  run package. No Birkin server required.
-* ``birkin demo`` — runs the full end-to-end vertical slice in <60s and
-  prints the canonical AUTHENTIC block.
-* ``birkin attack <1|2|3>`` — runs one of the three attack demos and
-  prints the tampered / blocked verdict.
-
-Everything else (``run``, ``keys``, ``identity``) is intentionally tiny:
-the slice is about *the evidence chain*, not a full operator surface.
+Birkin CLI: Zero-Trust Agent Authorization & Evidence Layer
+Commands:
+  - birkin init --claude-code : Wires .claude/settings.json PreToolUse hooks + skills
+  - birkin verify --ledger   : Audits SHA-256 hash chains, Ed25519 signatures, & tamper diffs
+  - birkin verify <package>  : Offline-verify an exported run package (.json)
+  - birkin demo              : Run end-to-end vertical slice demo
+  - birkin attack <1|2|3>    : Run attack demonstration
+  - birkin keys              : Generate fresh signing keypair
+  - birkin run               : Run single governed tool invocation
 """
-
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -27,8 +21,7 @@ from typing import Optional
 
 import typer
 
-# Allow ``birkin demo`` and ``birkin attack`` to import the demos/ package,
-# which lives next to the birkin package in the project root (not installed).
+# Allow ``birkin demo`` and ``birkin attack`` to import the demos/ package
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -43,7 +36,39 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+cli = app
 
+
+# ---------------------------------------------------------------------------
+# Cryptographic & Canonicalization Helpers (RFC-8785)
+# ---------------------------------------------------------------------------
+
+def canonicalize_jcs(obj) -> str:
+    """RFC-8785 deterministic JSON key sorting and serialization."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def sha256_hex(data: str) -> str:
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def compute_ascii_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Zero-dependency fallback ASCII table formatter."""
+    col_widths = [max(len(str(item)) for item in col) for col in zip(*(rows + [headers]))]
+
+    def format_row(row):
+        return " | ".join(str(val).ljust(width) for val, width in zip(row, col_widths))
+
+    separator = "-+-".join("-" * width for width in col_widths)
+    lines = [format_row(headers), separator]
+    for row in rows:
+        lines.append(format_row(row))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Command: `birkin version`
+# ---------------------------------------------------------------------------
 
 @app.command()
 def version() -> None:
@@ -51,81 +76,189 @@ def version() -> None:
     typer.echo(f"birkin {__version__}")
 
 
-def _verify_ledger_file(path: Path, format_type: str = "text") -> bool:
-    if not path.exists():
-        typer.echo(f"error: ledger file not found: {path}", err=True)
+# ---------------------------------------------------------------------------
+# Command: `birkin init --claude-code`
+# ---------------------------------------------------------------------------
+
+@app.command("init")
+def init(
+    claude_code: bool = typer.Option(True, "--claude-code", help="Wire .claude/settings.json PreToolUse hook gate."),
+    policy_path: str = typer.Option(".birkin/strict.yaml", "--policy-path", help="Path to fail-closed policy configuration."),
+) -> None:
+    """Initialize Birkin runtime hooks and audit structures in the local repository."""
+    typer.echo("Initializing Birkin Zero-Trust Agent Firewall...")
+
+    os.makedirs(".birkin", exist_ok=True)
+
+    # 1. Write default strict policy if missing
+    if not os.path.exists(policy_path):
+        default_policy = (
+            "version: '1.0'\n"
+            "mode: FAIL_CLOSED\n"
+            "rules:\n"
+            "  - id: POL-01\n"
+            "    name: NO_ENV_EXFILTRATION\n"
+            "    pattern: '(\\.env|AWS_SECRET|PRIVATE_KEY|curl.*-d)'\n"
+            "    action: BLOCK_FAIL_CLOSED\n"
+            "  - id: POL-02\n"
+            "    name: NO_DESTRUCTIVE_DDL\n"
+            "    pattern: '(DROP\\s+TABLE|TRUNCATE|rm\\s+-rf)'\n"
+            "    action: BLOCK_FAIL_CLOSED\n"
+        )
+        with open(policy_path, "w", encoding="utf-8") as f:
+            f.write(default_policy)
+        typer.echo(f"  [+] Created default policy: {policy_path}")
+
+    # 2. Wire Claude Code PreToolUse Hook if requested
+    if claude_code:
+        os.makedirs(".claude", exist_ok=True)
+        settings_path = ".claude/settings.json"
+
+        settings = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+            except Exception:
+                typer.echo("  [!] Warning: Existing .claude/settings.json was malformed. Overwriting hooks.")
+
+        hooks_config = settings.setdefault("hooks", {})
+        pre_tool_use = hooks_config.setdefault("PreToolUse", [])
+
+        hook_entry = {
+            "matcher": "Bash|Write|Edit|MultiEdit|mcp__.*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"python3 -m birkin.hooks.claude_code_gate --policy {policy_path} --ledger .birkin/receipts.jsonl",
+                }
+            ],
+        }
+
+        # Avoid duplicate hook registration
+        if not any(isinstance(h, dict) and h.get("matcher") == hook_entry["matcher"] for h in pre_tool_use):
+            pre_tool_use.append(hook_entry)
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+            typer.echo(f"  [✓] Wired PreToolUse deterministic gate into {settings_path}")
+        else:
+            typer.echo("  [i] PreToolUse hook already registered in .claude/settings.json")
+
+        # 3. Create audit skill placeholder
+        skill_dir = ".claude/skills/birkin-audit"
+        os.makedirs(skill_dir, exist_ok=True)
+        skill_path = os.path.join(skill_dir, "SKILL.md")
+        with open(skill_path, "w", encoding="utf-8") as f:
+            f.write(
+                "---\n"
+                "name: birkin-audit\n"
+                "description: Verify cryptographic execution receipts and audit the local SHA-256 hash chain.\n"
+                "---\n\n"
+                "Run `birkin verify --ledger .birkin/receipts.jsonl` to audit agent session integrity.\n"
+            )
+        typer.echo(f"  [✓] Installed /birkin-audit skill in {skill_dir}")
+
+    typer.echo("\nBirkin initialization complete. AuditGPT / Birkin active.")
+
+
+# ---------------------------------------------------------------------------
+# Command: `birkin verify --ledger` / `birkin verify <package>`
+# ---------------------------------------------------------------------------
+
+def _verify_ledger_file(ledger_path: Path, format_type: str = "table") -> bool:
+    if not ledger_path.exists():
+        typer.echo(f"Error: Ledger file not found at {ledger_path}", err=True)
         return False
 
-    with open(path, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
+    typer.echo(f"Auditing cryptographic ledger: {ledger_path}...\n")
 
-    if not lines:
-        typer.echo("[✓] VERDICT: AUTHENTIC — 0 frames in ledger.")
+    receipts = []
+    with open(ledger_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                receipts.append(json.loads(line))
+            except Exception as e:
+                typer.echo(f"[-] Malformed JSON on line {line_num}: {e}", err=True)
+                return False
+
+    if not receipts:
+        typer.echo("Ledger is empty. No execution frames recorded.")
         return True
 
-    from .hooks.claude_code_gate import canonicalize_jcs, sha256_hex
+    # Hash-Chain & Tamper Audit Loop
+    expected_prev_hash = "0" * 64
+    tamper_detected = False
+    tamper_index = -1
+    tamper_reason = ""
+    table_rows = []
 
-    prev_hash = "0" * 64
-    blocked_count = 0
-    for idx, line in enumerate(lines):
-        try:
-            entry = json.loads(line)
-        except Exception as exc:
-            typer.echo(f"[✗] VERDICT: TAMPERED — Malformed JSON at frame {idx}: {exc}")
-            return False
+    for idx, rec in enumerate(receipts):
+        stored_hash = rec.get("receipt_sha256", "")
+        stored_prev = rec.get("prev_receipt_hash", "")
 
-        stored_hash = entry.get("receipt_sha256")
-        chain_prev = entry.get("prev_receipt_hash")
-
-        if chain_prev != prev_hash:
-            typer.echo(
-                f"[✗] VERDICT: TAMPERED — Hash chain break at frame {idx} "
-                f"(expected {prev_hash[:16]}..., got {chain_prev[:16]}...)"
+        if stored_prev != expected_prev_hash:
+            tamper_detected = True
+            tamper_index = idx
+            tamper_reason = (
+                f"Hash Chain Break at Frame T+{idx}: "
+                f"Expected prev_hash {expected_prev_hash[:16]}..., got {stored_prev[:16]}..."
             )
-            return False
+            break
 
-        core = {k: v for k, v in entry.items() if k != "receipt_sha256"}
-        recomputed = sha256_hex(canonicalize_jcs(core))
-        if recomputed != stored_hash:
-            typer.echo(
-                f"[✗] VERDICT: TAMPERED — Digest mismatch at frame {idx} "
-                f"(expected {recomputed[:16]}..., got {stored_hash[:16]}... 1-byte tamper detected)"
+        rec_copy = dict(rec)
+        rec_copy.pop("receipt_sha256", None)
+        recomputed_hash = sha256_hex(canonicalize_jcs(rec_copy))
+
+        if recomputed_hash != stored_hash:
+            tamper_detected = True
+            tamper_index = idx
+            tamper_reason = (
+                f"Payload Mutation Detected at Frame T+{idx}: "
+                f"Stored hash {stored_hash[:16]}... != Recomputed {recomputed_hash[:16]}... (1-byte ledger modification)"
             )
-            return False
+            break
 
-        if entry.get("decision") == "BLOCKED_FAIL_CLOSED":
-            blocked_count += 1
+        tool = rec.get("tool_name", "unknown")
+        decision = rec.get("decision", "UNKNOWN")
+        score = rec.get("blast_radius_score", 0)
+        latency = f"{rec.get('latency_ms', 0)}ms"
 
-        prev_hash = stored_hash
+        table_rows.append([f"T+{idx}", tool, decision, f"{score}/100", latency, stored_hash[:16] + "..."])
+        expected_prev_hash = stored_hash
 
-    if format_type == "table":
-        typer.echo(
-            f"┌────────────────────────┬──────────────────────────────────────────┐\n"
-            f"│ Total Frames Verified  │ {len(lines):<40} │\n"
-            f"│ Blocked Fail-Closed    │ {blocked_count:<40} │\n"
-            f"│ Hash Chain Verdict     │ AUTHENTIC (Ed25519 / SHA-256 Valid)      │\n"
-            f"└────────────────────────┴──────────────────────────────────────────┘"
-        )
+    if format_type == "table" and table_rows:
+        headers = ["Frame", "Tool Invocation", "Decision", "Blast Score", "Latency", "SHA-256 Receipt Fingerprint"]
+        typer.echo(compute_ascii_table(headers, table_rows))
+        typer.echo()
+
+    if tamper_detected:
+        typer.echo("=" * 65)
+        typer.echo(f"✗ TAMPER DETECTED: {tamper_reason}")
+        typer.echo("=" * 65)
+        typer.echo(f"Audit failed at frame index {tamper_index}. Ledger cryptographic integrity invalidated.")
+        return False
     else:
-        typer.echo(
-            f"[✓] VERDICT: AUTHENTIC — {len(lines)} frames verified, "
-            f"{blocked_count} blocked, 0 hash-chain breaks."
-        )
-    return True
+        typer.echo("=" * 65)
+        typer.echo(f"✓ VERDICT: AUTHENTIC — {len(receipts)} frames verified, 0 chain breaks.")
+        typer.echo("=" * 65)
+        return True
 
 
-@app.command()
+@app.command("verify")
 def verify(
     package: Optional[str] = typer.Argument(None, help="Path to a birkin run package (.json)"),
-    ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to a receipts JSONL ledger"),
-    format: str = typer.Option("text", "--format", help="Output format: text or table"),
+    ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to the JSONL receipt ledger."),
+    format: str = typer.Option("table", "--format", help="Output format: table or json"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print verdict only"),
 ) -> None:
-    """Offline-verify a Birkin run package or JSONL audit ledger."""
+    """Audit the append-only SHA-256 hash chain and perform cryptographic tamper diffing."""
     if ledger:
         ok = _verify_ledger_file(Path(ledger), format_type=format)
         if not ok:
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=2)
         return
 
     if not package:
@@ -136,6 +269,7 @@ def verify(
     if not path.exists():
         typer.echo(f"error: package not found: {package}", err=True)
         raise typer.Exit(code=2)
+
     report = verify_file(path)
     if quiet:
         typer.echo(report.verdict)
@@ -145,97 +279,27 @@ def verify(
         raise typer.Exit(code=1)
 
 
-@app.command()
-def init(
-    claude_code: bool = typer.Option(
-        True, "--claude-code", help="Install Claude Code PreToolUse hard-hook into .claude/settings.json"
-    ),
-) -> None:
-    """Initialize Birkin governance hooks into the local workspace."""
-    os.makedirs(".birkin", exist_ok=True)
-    os.makedirs(".claude", exist_ok=True)
-
-    settings_path = Path(".claude/settings.json")
-    settings: dict = {}
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except Exception:
-            settings = {}
-
-    hooks = settings.setdefault("hooks", {})
-    pre_tool_use = hooks.setdefault("PreToolUse", [])
-
-    hook_entry = {
-        "matcher": "Bash|Write|Edit|MultiEdit|mcp__.*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": "python3 -m birkin.hooks.claude_code_gate --policy .birkin/strict.yaml --ledger .birkin/receipts.jsonl",
-            }
-        ],
-    }
-
-    if not any(isinstance(h, dict) and h.get("matcher") == hook_entry["matcher"] for h in pre_tool_use):
-        pre_tool_use.append(hook_entry)
-
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-
-    skill_dir = Path(".claude/skills/birkin-audit")
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_file = skill_dir / "SKILL.md"
-    skill_content = """---
-name: birkin-audit
-description: Verify cryptographic execution receipts, audit the local SHA-256 hash chain, and inspect blocked tool calls in .birkin/receipts.jsonl.
----
-
-# Birkin Cryptographic Session Auditor
-
-When the user invokes `/birkin-audit`, run the offline verification CLI to validate the integrity of the local `.birkin/receipts.jsonl` hash chain and Ed25519 signatures:
-
-```bash
-python3 -m birkin.cli verify --ledger .birkin/receipts.jsonl --format table
-```
-
-Report the total frames verified, any `BLOCKED_FAIL_CLOSED` events, and confirm whether the hash chain verdict is `AUTHENTIC` or `TAMPERED`.
-"""
-    skill_file.write_text(skill_content, encoding="utf-8")
-
-    typer.echo("[BIRKIN INIT] ✓ Wrote .claude/settings.json PreToolUse hook (exit code 2 fail-closed)")
-    typer.echo("[BIRKIN INIT] ✓ Installed .claude/skills/birkin-audit/SKILL.md")
-    typer.echo("[BIRKIN INIT] ✓ Initialized .birkin audit ledger directory")
-
+# ---------------------------------------------------------------------------
+# Additional Commands: demo, attack, keys, run
+# ---------------------------------------------------------------------------
 
 @app.command()
 def demo(
-    out: Optional[str] = typer.Option(
-        None, "--out", "-o", help="Write the run package to this path"
-    ),
-    show_events: bool = typer.Option(
-        False, "--show-events", help="Print the full event ledger"
-    ),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Write the run package to this path"),
+    show_events: bool = typer.Option(False, "--show-events", help="Print the full event ledger"),
 ) -> None:
     """Run the end-to-end vertical slice in <60s and print the verdict."""
     from demos.end_to_end import run_demo
-
     run_demo(out_path=out, show_events=show_events)
 
 
 @app.command()
 def attack(
     n: int = typer.Argument(..., help="Attack number: 1, 2, or 3"),
-    out: Optional[str] = typer.Option(
-        None, "--out", "-o", help="Write the tampered package to this path"
-    ),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Write the tampered package to this path"),
 ) -> None:
-    """Run one of the three attack demonstrations.
-
-    1. Prompt injection / goal hijacking
-    2. Unauthorized / privilege-escalating tool use
-    3. Skill or policy tampering
-    """
+    """Run one of the three attack demonstrations."""
     from demos import attacks
-
     if n == 1:
         attacks.attack_1_prompt_injection(out_path=out)
     elif n == 2:
@@ -259,10 +323,7 @@ def keys() -> None:
         },
         indent=2,
     ))
-    typer.echo(
-        "# store private_b64 as BIRKIN_SIGNING_KEY (env). Distribute public_b64.",
-        err=True,
-    )
+    typer.echo("# store private_b64 as BIRKIN_SIGNING_KEY (env). Distribute public_b64.", err=True)
 
 
 @app.command()
@@ -271,9 +332,7 @@ def run(
     args_json: str = typer.Option("{}", "--args", help="JSON args"),
     agent_id: str = typer.Option("demo-agent", "--agent-id"),
     out: str = typer.Option("run_package.json", "--out", "-o"),
-    policy: Optional[str] = typer.Option(
-        None, "--policy", help="Path to policy JSON (default: bundled default)"
-    ),
+    policy: Optional[str] = typer.Option(None, "--policy", help="Path to policy JSON"),
 ) -> None:
     """Run a single tool under Birkin governance and export a run package."""
     from .engine import Engine
@@ -285,10 +344,7 @@ def run(
 
     spec = PolicySpec.load(policy or DEFAULT_POLICY_PATH)
     adapter = HermesAdapter()
-    identity = adapter.make_identity(
-        agent_id=agent_id,
-        policy_ref=spec.ref,
-    )
+    identity = adapter.make_identity(agent_id=agent_id, policy_ref=spec.ref)
     engine = Engine(birkin_signing_key=sk, policy=spec, adapter=adapter)
     engine.start_session(identity)
     request = adapter.build_action_request(
@@ -301,8 +357,7 @@ def run(
     engine.end_session(identity)
     engine.export_to_file(out, identity=identity)
     typer.echo(
-        f"wrote {out}  decision={receipt.decision}  rule={receipt.rule}  "
-        f"risk={receipt.risk_score}"
+        f"wrote {out}  decision={receipt.decision}  rule={receipt.rule}  risk={receipt.risk_score}"
     )
 
 

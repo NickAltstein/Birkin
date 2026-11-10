@@ -83,3 +83,4 @@ def test_ledger_tamper_detection(tmp_path: Path):
     ledger.write_text("\n".join(tampered_lines) + "\n", encoding="utf-8")
 
     assert _verify_ledger_file(ledger) is False
+

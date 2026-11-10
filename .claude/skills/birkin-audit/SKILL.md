@@ -12,3 +12,4 @@ python3 -m birkin.cli verify --ledger .birkin/receipts.jsonl --format table
 ```
 
 Report the total frames verified, any `BLOCKED_FAIL_CLOSED` events, and confirm whether the hash chain verdict is `AUTHENTIC` or `TAMPERED`.
+
