@@ -54,7 +54,7 @@ Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger
 * **[Exploit Deep-Link #2: 1-Byte Ledger Tamper (`✗ TAMPER DETECTED`)](https://sandbox.auditgpt.ai/?scenario=poisoned-pr&step=2&tamper=1)** — Watch how flipping a single byte in the historical tool log breaks the Ed25519 signature and SHA-256 Merkle root.
 * **Platform Security**: [auditgpt.ai](https://auditgpt.ai) — Adversarial pre-merge stress testing & ASTI v1.1 CI/CD gate.
 
-> **45-Second Demo Walkthrough** — *Claude Code hits a poisoned PR → Receiptd `PreToolUse` hook hard-blocks `.env` exfiltration (decision time ≈ 0.02 ms in-process; ~89 ms for a full cold hook invocation) → Offline verifier flips from `AUTHENTIC` to `TAMPERED` on a 1-byte mutation.*
+> **45-Second Demo Walkthrough** — *Claude Code hits a poisoned PR → Receiptd `PreToolUse` hook hard-blocks `.env` exfiltration (decision time ≈ 0.02 ms in-process; ~78 ms for a full cold hook invocation) → Offline verifier flips from `AUTHENTIC` to `TAMPERED` on a 1-byte mutation.*
 
 ---
 
@@ -68,7 +68,7 @@ Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger
 | **Legitimate Read / Test Suite** | `pytest -q tests/test_crypto.py` | `ALLOWED_VERIFIED` (Exit `0`) | `0.88 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Post-Execution Log Tampering** | *1 byte modified in `.birkin/receipts.jsonl`* | *N/A (Post-Run Audit)* | `0.42 ms` | **`✗ TAMPERED (Hash & Sig Mismatch)`** |
 
-\* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~89 ms (89.1 ms mean; 102.4 ms p95, from `benchmarks/results.json`). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
+\* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~78 ms (77.5 ms mean; 82.4 ms p95, from `benchmarks/results.json`). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
 
 ---
 
@@ -170,7 +170,7 @@ sequenceDiagram
 
 - **Fail-Closed By Default**: Any unhandled exception, malformed JSON-RPC schema, missing policy context, or signature verification mismatch immediately halts execution before reaching the underlying runtime.
 - **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
-- **Deterministic Gate with No LLM Calls**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory: 0.021 ms mean in-process; ~89 ms for a full cold hook invocation (see Performance Benchmarks).
+- **Deterministic Gate with No LLM Calls**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory: 0.021 ms mean in-process; ~78 ms for a full cold hook invocation (see Performance Benchmarks).
 - **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_receipt_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
 
 ---
