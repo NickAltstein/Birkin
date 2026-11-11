@@ -143,6 +143,19 @@ Simulate an autonomous agent under prompt injection attempting `.env` exfiltrati
 python3 fixtures/vulnerable_agent.py
 ```
 
+### End-to-End Case Study: Synthetic Invoice Review
+
+Demonstrates the 4-layer autonomous agent security harness (Enforcement, Resulting State Verification, Evidence, and Regression Gate):
+
+```bash
+python3 fixtures/run_invoice_case_study.py
+```
+
+* **Enforcement:** Safe read of invoice line items succeeds (exit 0) citing exact source fields (`line_items[0].amount`); unauthorized disbursement under prompt injection exits fail-closed (code 2).
+* **State Verification:** Proves that the approval tool was **never invoked** and the invoice remains strictly in `PENDING_REVIEW`.
+* **Cryptographic Evidence:** Verifies offline via `receiptd verify` (`AUTHENTIC`); flipping 1 byte in the ledger trips `TAMPER DETECTED`.
+* **Execution Telemetry:** Records tool step counts, execution latency, and spend caps into `run.json`.
+
 ---
 
 ## Core Architecture
