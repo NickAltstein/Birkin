@@ -33,6 +33,7 @@ from ..ledger import (
     build_signed_checkpoint,
     build_signed_receipt,
     build_unsigned_signing_error_receipt,
+    lock_ledger,
     read_ledger_state,
     record_ledger_anchor,
 )
@@ -179,30 +180,120 @@ def run_stop_gate(
     diag = stderr_snip or stdout_snip or f"Command exited with status {exit_code}"
     test_output_hash = sha256_hex(diag)
 
-    # Read ledger state
-    prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
-    seq = receipt_count + 1
+    # Read ledger state and write under exclusive inter-process lock
+    with lock_ledger(ledger_path):
+        prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
+        seq = receipt_count + 1
 
-    sk: SigningKey | None = None
-    try:
-        sk = get_signing_key()
-    except Exception:
-        sk = None
+        sk: SigningKey | None = None
+        try:
+            sk = get_signing_key()
+        except Exception:
+            sk = None
 
-    if test_passed:
-        # Reset retry counter on success
-        if session_id in sessions:
-            sessions.pop(session_id, None)
-            save_state(state_file, state)
+        if test_passed:
+            # Reset retry counter on success
+            if session_id in sessions:
+                sessions.pop(session_id, None)
+                save_state(state_file, state)
 
-        decision = "ALLOWED_VERIFIED"
-        reason = f"All tests verified: {resolved_cmd}"
+            decision = "ALLOWED_VERIFIED"
+            reason = f"All tests verified: {resolved_cmd}"
+
+            extra = {
+                "event_type": "STOP_GATE",
+                "test_command": resolved_cmd,
+                "test_exit_code": exit_code,
+                "retries": 0,
+                "stop_hook_active": stop_hook_active,
+                "latency_ms": latency_ms,
+            }
+
+            if sk is None:
+                receipt = build_unsigned_signing_error_receipt(
+                    v=1,
+                    seq=seq,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    session_id=session_id,
+                    tool="stop_gate",
+                    args_sha256=sha256_hex(resolved_cmd),
+                    decision="deny",
+                    rule_ids=["RULE:TESTS_PASS"],
+                    blast_radius=0,
+                    reason="receiptd: signing unavailable",
+                    policy_sha256=sha256_hex(resolved_cmd),
+                    prev_hash=prev_hash,
+                    extra_fields=extra,
+                )
+                append_ledger_entry(ledger_path, receipt)
+                sys.stderr.write("receiptd: signing unavailable\n")
+                return 2
+
+            receipt = build_signed_receipt(
+                sk=sk,
+                v=1,
+                seq=seq,
+                ts=datetime.now(timezone.utc).isoformat(),
+                session_id=session_id,
+                tool="stop_gate",
+                args_sha256=sha256_hex(resolved_cmd),
+                decision=decision,
+                rule_ids=["RULE:TESTS_PASS"],
+                blast_radius=0,
+                reason=reason,
+                policy_sha256=sha256_hex(resolved_cmd),
+                prev_hash=prev_hash,
+                extra_fields=extra,
+            )
+            try:
+                record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
+            except Exception as exc:
+                sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
+                return 2
+            append_ledger_entry(ledger_path, receipt)
+
+            # Seal ledger with signed Merkle checkpoint at session completion
+            uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
+            from_seq = last_cp_seq + 1
+            to_seq = seq
+            cp = build_signed_checkpoint(
+                sk=sk,
+                from_seq=from_seq,
+                to_seq=to_seq,
+                leaf_hashes=uncheckpointed_hashes,
+                prev_checkpoint_hash=last_cp_hash,
+            )
+            append_ledger_entry(ledger_path, cp)
+
+            sys.stdout.write(
+                f"\n[RECEIPTD STOP GATE PASSED] All tests verified. Completion allowed.\n"
+                f"  ├─ Session ID: {session_id}\n"
+                f"  ├─ Verification Command: {resolved_cmd}\n"
+                f"  ├─ Latency: {latency_ms}ms\n"
+                f"  └─ Signed Completion Receipt: {receipt['hash'][:24]}...\n"
+            )
+            return 0
+
+        # Tests failed
+        current_retries = session_info.get("retries", 0) + 1
+        session_info["retries"] = current_retries
+        session_info["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_state(state_file, state)
+
+        is_gave_up = bool(stop_hook_active and current_retries >= max_retries)
+        decision = "gave_up" if is_gave_up else "BLOCKED_FAIL_CLOSED"
+        reason = (
+            f"Max retries ({max_retries}) reached with stop_hook_active=True: {diag[:200]}"
+            if is_gave_up
+            else f"Tests failed ({exit_code}): {diag[:200]}"
+        )
 
         extra = {
             "event_type": "STOP_GATE",
             "test_command": resolved_cmd,
             "test_exit_code": exit_code,
-            "retries": 0,
+            "test_output_sha256": test_output_hash,
+            "retries": current_retries,
             "stop_hook_active": stop_hook_active,
             "latency_ms": latency_ms,
         }
@@ -217,7 +308,7 @@ def run_stop_gate(
                 args_sha256=sha256_hex(resolved_cmd),
                 decision="deny",
                 rule_ids=["RULE:TESTS_PASS"],
-                blast_radius=0,
+                blast_radius=100,
                 reason="receiptd: signing unavailable",
                 policy_sha256=sha256_hex(resolved_cmd),
                 prev_hash=prev_hash,
@@ -237,7 +328,7 @@ def run_stop_gate(
             args_sha256=sha256_hex(resolved_cmd),
             decision=decision,
             rule_ids=["RULE:TESTS_PASS"],
-            blast_radius=0,
+            blast_radius=100,
             reason=reason,
             policy_sha256=sha256_hex(resolved_cmd),
             prev_hash=prev_hash,
@@ -249,95 +340,6 @@ def run_stop_gate(
             sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
             return 2
         append_ledger_entry(ledger_path, receipt)
-
-        # Seal ledger with signed Merkle checkpoint at session completion
-        uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
-        from_seq = last_cp_seq + 1
-        to_seq = seq
-        cp = build_signed_checkpoint(
-            sk=sk,
-            from_seq=from_seq,
-            to_seq=to_seq,
-            leaf_hashes=uncheckpointed_hashes,
-            prev_checkpoint_hash=last_cp_hash,
-        )
-        append_ledger_entry(ledger_path, cp)
-
-        sys.stdout.write(
-            f"\n[RECEIPTD STOP GATE PASSED] All tests verified. Completion allowed.\n"
-            f"  ├─ Session ID: {session_id}\n"
-            f"  ├─ Verification Command: {resolved_cmd}\n"
-            f"  ├─ Latency: {latency_ms}ms\n"
-            f"  └─ Signed Completion Receipt: {receipt['hash'][:24]}...\n"
-        )
-        return 0
-
-    # Tests failed
-    current_retries = session_info.get("retries", 0) + 1
-    session_info["retries"] = current_retries
-    session_info["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_state(state_file, state)
-
-    is_gave_up = bool(stop_hook_active and current_retries >= max_retries)
-    decision = "gave_up" if is_gave_up else "BLOCKED_FAIL_CLOSED"
-    reason = (
-        f"Max retries ({max_retries}) reached with stop_hook_active=True: {diag[:200]}"
-        if is_gave_up
-        else f"Tests failed ({exit_code}): {diag[:200]}"
-    )
-
-    extra = {
-        "event_type": "STOP_GATE",
-        "test_command": resolved_cmd,
-        "test_exit_code": exit_code,
-        "test_output_sha256": test_output_hash,
-        "retries": current_retries,
-        "stop_hook_active": stop_hook_active,
-        "latency_ms": latency_ms,
-    }
-
-    if sk is None:
-        receipt = build_unsigned_signing_error_receipt(
-            v=1,
-            seq=seq,
-            ts=datetime.now(timezone.utc).isoformat(),
-            session_id=session_id,
-            tool="stop_gate",
-            args_sha256=sha256_hex(resolved_cmd),
-            decision="deny",
-            rule_ids=["RULE:TESTS_PASS"],
-            blast_radius=100,
-            reason="receiptd: signing unavailable",
-            policy_sha256=sha256_hex(resolved_cmd),
-            prev_hash=prev_hash,
-            extra_fields=extra,
-        )
-        append_ledger_entry(ledger_path, receipt)
-        sys.stderr.write("receiptd: signing unavailable\n")
-        return 2
-
-    receipt = build_signed_receipt(
-        sk=sk,
-        v=1,
-        seq=seq,
-        ts=datetime.now(timezone.utc).isoformat(),
-        session_id=session_id,
-        tool="stop_gate",
-        args_sha256=sha256_hex(resolved_cmd),
-        decision=decision,
-        rule_ids=["RULE:TESTS_PASS"],
-        blast_radius=100,
-        reason=reason,
-        policy_sha256=sha256_hex(resolved_cmd),
-        prev_hash=prev_hash,
-        extra_fields=extra,
-    )
-    try:
-        record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
-    except Exception as exc:
-        sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
-        return 2
-    append_ledger_entry(ledger_path, receipt)
 
     if is_gave_up:
         # Seal ledger with signed Merkle checkpoint on give-up
