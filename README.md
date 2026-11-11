@@ -4,7 +4,7 @@
 
 # Receiptd
 
-**Cryptographic authorization receipts, 0.02ms in-process policy checks (~89ms cold CLI hook), and offline hash-chain verification for autonomous AI agents.**
+**Cryptographic authorization receipts, 0.02ms in-process policy checks (~78ms cold CLI hook), and offline hash-chain verification for autonomous AI agents.**
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
@@ -12,11 +12,11 @@
 [![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, fail-closed execution boundary outside the model runtime for every action routed through its hooks (see Honest limitations)—blocking unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~89 ms cold CLI hook) while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic execution boundary outside the model runtime for every action routed through its hooks (see Honest limitations)—the PreToolUse gate fails closed on unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~78 ms cold CLI hook), while the Stop hook prevents premature completion until tests pass (giving up after 3 retries with a signed `gave_up` receipt). Every action emits an offline-verifiable **Ed25519 cryptographic receipt**.
 
 **Receiptd gates both ends: before each tool call and before the agent says it's done.**
-* **PreToolUse Gate (exit 2):** Evaluates payload context, secrets, and policy constraints before any shell or tool executes.
-* **Stop Gate (exit 2):** Deterministically prevents an autonomous agent from declaring task completion while tests fail, requiring passing test suites and appending a signed completion receipt.
+* **PreToolUse Gate (exit 2):** Fails closed before any shell, SQL, or tool mutation executes.
+* **Stop Gate (exit 2 / exit 0):** Prevents premature completion while tests fail, giving up after 3 retries with a signed `gave_up` receipt.
 
 ---
 
@@ -182,9 +182,9 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 | Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
 | :--- | :--- | :--- | :--- | :--- |
 | **AST & Policy-as-Code Evaluation** | 0.005 ms | — | < 1.0 MB | None |
-| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.017 ms | — | < 1.5 MB | None |
-| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.038 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
-| **Full Claude Code Hook Execution (Cold Python Process)** | **89.1 ms** | **102.4 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
+| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.016 ms | — | < 1.5 MB | None |
+| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.033 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| **Full Claude Code Hook Execution (Cold Python Process)** | **77.5 ms** | **82.4 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
 
 Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed results: `benchmarks/results.json` (measured after Ed25519 signing was added; component rows report means only). Earlier ~67 ms cold-hook figures predate signing and are obsolete.
