@@ -109,7 +109,7 @@ def build_signed_receipt(
     prev_hash: str,
     extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Construct and Ed25519-sign an authorization receipt over RFC-8785 canonical bytes."""
+    """Construct and Ed25519-sign an authorization receipt over canonical JSON (sorted keys) bytes."""
     receipt: dict[str, Any] = {
         "v": v,
         "ts": ts,

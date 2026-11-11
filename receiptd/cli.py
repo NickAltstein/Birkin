@@ -55,11 +55,11 @@ cli = app
 
 
 # ---------------------------------------------------------------------------
-# Cryptographic & Canonicalization Helpers (RFC-8785)
+# Cryptographic & Canonicalization Helpers (canonical JSON, sorted keys)
 # ---------------------------------------------------------------------------
 
 def canonicalize_jcs(obj) -> str:
-    """RFC-8785 deterministic JSON key sorting and serialization."""
+    """Canonical JSON (sorted keys, compact separators). Not full RFC 8785."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 

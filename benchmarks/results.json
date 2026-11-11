@@ -3,9 +3,9 @@
   "policy_eval_mean_ms": 0.005,
   "crypto_sign_mean_ms": 0.016,
   "in_process_total_overhead_mean_ms": 0.021,
-  "in_process_p50_ms": 0.02,
-  "in_process_p95_ms": 0.024,
-  "in_process_p99_ms": 0.031,
-  "cold_process_mean_ms": 88.7,
-  "cold_process_p95_ms": 111.2
+  "in_process_p50_ms": 0.021,
+  "in_process_p95_ms": 0.026,
+  "in_process_p99_ms": 0.033,
+  "cold_process_mean_ms": 77.5,
+  "cold_process_p95_ms": 82.4
 }
