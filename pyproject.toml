@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "receiptd"
 version = "1.0.0"
-description = "Cryptographic authorization receipts, 0.02ms in-process policy checks (~67ms CLI hook), and offline hash-chain verification for autonomous AI agents."
+description = "Cryptographic authorization receipts, 0.02ms in-process policy checks (~89ms cold CLI hook), and offline hash-chain verification for autonomous AI agents."
 readme = "README.md"
 authors = [
     { name = "Nick Altstein", email = "nickaltstein@gmail.com" }

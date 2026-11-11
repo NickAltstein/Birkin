@@ -38,7 +38,7 @@ from ..ledger import (
 
 
 def canonicalize_jcs(obj) -> str:
-    """RFC-8785 deterministic JSON serialization."""
+    """Canonical JSON (sorted keys, compact separators). Not full RFC 8785."""
     return canonical_json(obj).decode("utf-8")
 
 
