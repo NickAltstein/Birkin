@@ -94,7 +94,7 @@ Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Recei
 ### 2. Stop Gate: Block "Done" When Tests Fail
 When the agent attempts to stop or declare task completion, Receiptd runs your verification suite. If tests fail, it exits with code `2`—preventing premature completion, feeding the test diagnostics back into the model prompt to fix, and appending a cryptographic rejection receipt.
 
-Receiptd tracks consecutive failed stop attempts per session in `~/.receiptd/stop_gate_state.json`. By default it retries 3 times (`--max-retries`, default `3`): once the failure count reaches that cap while Claude Code reports `stop_hook_active: true`, Receiptd gives up, exits `0` (letting the agent stop), and records a signed `gave_up` receipt. This prevents runaway retry loops. Failures below the cap exit `2` and feed the diagnostics back to the model.
+Receiptd tracks consecutive failed stop attempts per session in `~/.receiptd/stop_gate_state.json`. By default it gives up after 3 failed attempts (`--max-retries`, default `3`): the first failures are blocked with exit `2`, and once the failure count reaches the cap while Claude Code reports `stop_hook_active: true`, Receiptd exits `0` (letting the agent stop) and records a signed `gave_up` receipt. This prevents runaway retry loops. Failures below the cap exit `2` and feed the diagnostics back to the model.
 
 ```bash
 # Run stop gate directly or via Claude Code Stop hook:
@@ -160,7 +160,7 @@ sequenceDiagram
         Proxy->>Host: Execute Sanitized Tool Call
         Host-->>Proxy: Deterministic Output Frame
         Proxy->>Ledger: Sign Ed25519 Execution Receipt + Update Merkle Root
-        Proxy-->>Agent: Tool Output + Receipt Header (X-Birkin-Sig)
+        Proxy-->>Agent: Tool Output + signed receipt
     end
 ```
 
@@ -172,40 +172,6 @@ sequenceDiagram
 - **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
 - **Deterministic Gate with No LLM Calls**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory: 0.021 ms mean in-process; ~89 ms for a full cold hook invocation (see Performance Benchmarks).
 - **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_receipt_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
-
----
-
-## Quickstart: Zero-Config MCP Proxy (CLI)
-
-Wrap any Model Context Protocol server to enforce strict fail-closed policies on every tool invocation:
-
-```bash
-npx birkin-proxy \
-  --wrap "npx -y @modelcontextprotocol/server-postgres postgresql://localhost/prod" \
-  --policy ./policies/strict-prod.yaml \
-  --ledger ./.birkin/audit.db
-```
-
-### Python Decorator Integration
-
-Protect standalone agent tool functions with a single decorator:
-
-```python
-from birkin import BirkinGuard, PolicyConfig
-
-guard = BirkinGuard(
-    policy_path="policies/strict.yaml",
-    private_key_env="BIRKIN_ED25519_PRIVKEY",
-    fail_closed=True,
-)
-
-@guard.enforce(tool_name="postgres.execute_sql", max_blast_score=50)
-def execute_sql(query: str) -> list[dict]:
-    # Birkin intercepts `query` before execution.
-    # If `DROP TABLE` or unindexed bulk mutation is detected, raises BirkinPolicyViolationError
-    # and writes a signed Ed25519 rejection receipt to the Merkle ledger.
-    return db.run(query)
-```
 
 ---
 
