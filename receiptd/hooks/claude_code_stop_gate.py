@@ -34,6 +34,7 @@ from ..ledger import (
     build_signed_receipt,
     build_unsigned_signing_error_receipt,
     read_ledger_state,
+    record_ledger_anchor,
 )
 
 
@@ -242,6 +243,11 @@ def run_stop_gate(
             prev_hash=prev_hash,
             extra_fields=extra,
         )
+        try:
+            record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
+        except Exception as exc:
+            sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
+            return 2
         append_ledger_entry(ledger_path, receipt)
 
         # Seal ledger with signed Merkle checkpoint at session completion
@@ -326,6 +332,11 @@ def run_stop_gate(
         prev_hash=prev_hash,
         extra_fields=extra,
     )
+    try:
+        record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
+    except Exception as exc:
+        sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
+        return 2
     append_ledger_entry(ledger_path, receipt)
 
     if is_gave_up:

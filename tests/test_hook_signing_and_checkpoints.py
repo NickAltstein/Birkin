@@ -93,7 +93,7 @@ def test_verify_signed_receipts(tmp_path: Path):
     )
     append_ledger_entry(ledger, cp)
 
-    ok = _verify_ledger_file(ledger, pubkey=sk.public_pem_bytes.decode("ascii"))
+    ok = _verify_ledger_file(ledger, pubkey=sk.public_pem_bytes.decode("ascii"), allow_unanchored=True)
     assert ok is True
 
 
@@ -118,7 +118,7 @@ def test_one_byte_mutated_sig_fails_verify_naming_seq(tmp_path: Path, capsys):
     r2["receipt_sha256"] = r2["hash"]
     append_ledger_entry(ledger, r2)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code != 0
     # Must explicitly name sequence #2
     assert "sequence #2" in result.output or "sequence 2" in result.output
@@ -160,7 +160,7 @@ def test_deleted_receipt_breaks_chain(tmp_path: Path):
     append_ledger_entry(ledger, r1)
     append_ledger_entry(ledger, r3)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code != 0
     assert "Hash Chain Break" in result.output
 
@@ -178,7 +178,7 @@ def test_reordered_receipt_breaks_chain(tmp_path: Path):
     append_ledger_entry(ledger, r3)
     append_ledger_entry(ledger, r2)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code != 0
     assert "Hash Chain Break" in result.output
 
@@ -195,7 +195,7 @@ def test_edited_receipt_breaks_chain(tmp_path: Path):
     r2["tool"] = "MaliciousTool"
     append_ledger_entry(ledger, r2)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code != 0
     assert "Payload Mutation Detected" in result.output
 
@@ -227,7 +227,7 @@ def test_checkpoint_root_mismatch_detected(tmp_path: Path):
     cp_record["hash"] = sha256_hex(canonical_json(cp_record))
     append_ledger_entry(ledger, cp_record)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code != 0
     assert "Checkpoint Merkle root mismatch" in result.output
 
@@ -258,7 +258,7 @@ def test_truncated_tail_reported_with_unproven_disclaimer(tmp_path: Path):
     r3 = _make_dummy_signed_receipt(sk, 3, r2["hash"])
     append_ledger_entry(ledger, r3)
 
-    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii")])
+    result = runner.invoke(app, ["verify", "--ledger", str(ledger), "--pubkey", sk.public_pem_bytes.decode("ascii"), "--allow-unanchored"])
     assert result.exit_code == 0
     assert "Uncheckpointed tail: receipts 3 to 3" in result.output
     assert "Missing receipts after the last checkpoint cannot be proven." in result.output

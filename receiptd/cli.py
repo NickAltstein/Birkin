@@ -41,6 +41,7 @@ from .ledger import (
     CHECKPOINT_SIGNABLE_FIELDS,
     GENESIS_HASH,
     SIGNABLE_RECEIPT_FIELDS,
+    read_ledger_anchor,
 )
 from .verify import render_report, verify_file
 
@@ -230,6 +231,8 @@ def _verify_ledger_file(
     ledger_path: Path,
     format_type: str = "table",
     pubkey: Optional[str] = None,
+    allow_unanchored: bool = False,
+    key_dir: Optional[Path] = None,
 ) -> bool:
     if not ledger_path.exists():
         typer.echo(f"Error: Ledger file not found at {ledger_path}", err=True)
@@ -250,16 +253,45 @@ def _verify_ledger_file(
                 return False
 
     if not entries:
+        if not allow_unanchored:
+            kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+            state_file = kd / "ledger_state.json"
+            if not state_file.exists():
+                legacy_file = kd / "state.json"
+                if legacy_file.exists():
+                    state_file = legacy_file
+            if state_file.exists():
+                try:
+                    raw_data = json.loads(state_file.read_text(encoding="utf-8"))
+                    norm_ledger = str(ledger_path.resolve())
+                    ledger_anchor = None
+                    if isinstance(raw_data.get("ledgers"), dict) and norm_ledger in raw_data["ledgers"]:
+                        ledger_anchor = raw_data["ledgers"][norm_ledger]
+                    elif raw_data.get("ledger_path") == norm_ledger:
+                        ledger_anchor = raw_data
+                    if ledger_anchor:
+                        anchor_seq = int(ledger_anchor.get("last_seq", 0))
+                        if anchor_seq > 0:
+                            typer.echo("=" * 65)
+                            typer.echo(f"✗ TAMPER DETECTED: Ledger is empty, but recorded state expects sequence #{anchor_seq}")
+                            typer.echo("=" * 65)
+                            typer.echo("Audit failed. Ledger cryptographic integrity invalidated.")
+                            return False
+                except Exception:
+                    pass
         typer.echo("Ledger is empty. No execution frames recorded.")
         return True
 
     # Resolve public key for verifying Ed25519 signatures
+    kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
     pubkey_target = pubkey
     if not pubkey_target:
         pubkey_target = os.environ.get("RECEIPTD_PUBLIC_KEY")
     if not pubkey_target:
         try:
-            pubkey_target = get_public_key_pem()
+            pubkey_target = get_public_key_pem(key_dir=kd)
+        except Exception:
+            pubkey_target = None
         except Exception:
             pubkey_target = None
 
@@ -268,6 +300,7 @@ def _verify_ledger_file(
     receipts_by_seq: dict[int, dict] = {}
     receipt_count = 0
     checkpoint_count = 0
+    unsigned_deny_count = 0
     last_checkpointed_seq = 0
     table_rows = []
 
@@ -377,6 +410,18 @@ def _verify_ledger_file(
                     tamper_detected = True
                     tamper_reason = f"Invalid Ed25519 signature at receipt sequence #{seq}"
                     break
+            else:
+                # Receipt without sig is ONLY allowed if signing_error: true AND decision == "deny"
+                decision = entry.get("decision", "UNKNOWN")
+                if is_signing_error and decision == "deny":
+                    unsigned_deny_count += 1
+                else:
+                    tamper_detected = True
+                    if is_signing_error and decision != "deny":
+                        tamper_reason = f"Unsigned receipt at sequence #{seq} has decision '{decision}' (only deny allowed with signing_error: true)"
+                    else:
+                        tamper_reason = f"Unsigned receipt at sequence #{seq} (missing Ed25519 signature)"
+                    break
 
             tool = entry.get("tool") or entry.get("tool_name", "unknown")
             decision = entry.get("decision", "UNKNOWN")
@@ -391,6 +436,90 @@ def _verify_ledger_file(
         headers = ["Frame", "Tool Invocation", "Decision", "Blast Score", "Latency", "SHA-256 Receipt Fingerprint"]
         typer.echo(compute_ascii_table(headers, table_rows))
         typer.echo()
+
+    if not tamper_detected and not allow_unanchored:
+        kd = key_dir or Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
+        state_file = kd / "ledger_state.json"
+        if not state_file.exists():
+            legacy_file = kd / "state.json"
+            if legacy_file.exists():
+                state_file = legacy_file
+
+        if not state_file.exists():
+            if receipt_count > 0:
+                tamper_detected = True
+                tamper_reason = (
+                    f"Missing signed ledger anchor: ledger has {receipt_count} receipts "
+                    f"but anchor state file {state_file} not found"
+                )
+        else:
+            try:
+                anchor_data = json.loads(state_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                tamper_detected = True
+                tamper_reason = f"Unreadable or corrupted ledger anchor in {state_file}: {exc}"
+                anchor_data = None
+
+            if anchor_data is not None:
+                norm_ledger = str(ledger_path.resolve())
+                ledger_anchor = None
+                ledgers = anchor_data.get("ledgers")
+                if isinstance(ledgers, dict) and norm_ledger in ledgers:
+                    ledger_anchor = ledgers[norm_ledger]
+                elif norm_ledger in anchor_data and isinstance(anchor_data[norm_ledger], dict):
+                    ledger_anchor = anchor_data[norm_ledger]
+                elif anchor_data.get("ledger_path") == norm_ledger:
+                    ledger_anchor = anchor_data
+                elif "last_seq" in anchor_data and not anchor_data.get("ledger_path"):
+                    ledger_anchor = anchor_data
+
+                if ledger_anchor is None:
+                    if receipt_count > 0:
+                        tamper_detected = True
+                        tamper_reason = (
+                            f"Missing signed ledger anchor for {norm_ledger}: "
+                            f"anchor state file exists but contains no anchor for this ledger path"
+                        )
+                else:
+                    sig = ledger_anchor.get("sig")
+                    if not sig:
+                        tamper_detected = True
+                        tamper_reason = f"Ledger anchor in {state_file} is unsigned (missing Ed25519 signature)"
+                    else:
+                        signable = {
+                            "last_hash": str(ledger_anchor.get("last_hash", "")),
+                            "last_seq": int(ledger_anchor.get("last_seq", 0)),
+                            "ledger_path": str(ledger_anchor.get("ledger_path", "")),
+                        }
+                        canonical_bytes = canonical_json(signable)
+                        if not pubkey_target or not verify_ed25519(pubkey_target, sig, canonical_bytes):
+                            tamper_detected = True
+                            tamper_reason = f"Invalid Ed25519 signature on ledger anchor in {state_file}"
+                        else:
+                            anchor_path = ledger_anchor.get("ledger_path")
+                            if anchor_path and anchor_path != norm_ledger:
+                                tamper_detected = True
+                                tamper_reason = f"Ledger anchor path mismatch: recorded {anchor_path}, verifying {norm_ledger}"
+                            else:
+                                anchor_seq = int(ledger_anchor.get("last_seq", 0))
+                                anchor_hash = str(ledger_anchor.get("last_hash", ""))
+                                if receipt_count < anchor_seq:
+                                    tamper_detected = True
+                                    tamper_reason = (
+                                        f"Ledger tail truncation detected: ledger ends at sequence #{receipt_count}, "
+                                        f"but recorded state expects sequence #{anchor_seq}"
+                                    )
+                                elif receipt_count == 0 and anchor_seq > 0:
+                                    tamper_detected = True
+                                    tamper_reason = f"Ledger is empty, but recorded state expects sequence #{anchor_seq}"
+                                elif receipt_count > 0 and anchor_seq in receipts_by_seq:
+                                    actual_hash = receipts_by_seq[anchor_seq]["hash"]
+                                    if actual_hash != anchor_hash:
+                                        tamper_detected = True
+                                        tamper_reason = (
+                                            f"Ledger anchor hash mismatch at sequence #{anchor_seq}: "
+                                            f"expected hash {anchor_hash[:16]}..., got {actual_hash[:16]}..."
+                                        )
 
     if tamper_detected:
         typer.echo("=" * 65)
@@ -410,8 +539,58 @@ def _verify_ledger_file(
 
     typer.echo("=" * 65)
     typer.echo(f"✓ VERDICT: AUTHENTIC — {receipt_count} receipts, {checkpoint_count} checkpoints verified, 0 chain breaks.")
+    typer.echo(f"Unsigned deny receipts accepted: {unsigned_deny_count}")
     typer.echo("=" * 65)
     return True
+
+
+@app.command("anchor")
+def anchor(
+    ledger: str = typer.Option(..., "--ledger", help="Path to the JSONL receipt ledger to anchor."),
+    force_reanchor: bool = typer.Option(False, "--force-reanchor", help="Replace an existing anchor for this ledger."),
+) -> None:
+    """Fully verify a ledger, then write a signed anchor for its last receipt."""
+    from .ledger import record_ledger_anchor
+
+    ledger_path = Path(ledger)
+    if not ledger_path.exists():
+        typer.echo(f"error: ledger not found: {ledger}", err=True)
+        raise typer.Exit(code=2)
+
+    if not force_reanchor and read_ledger_anchor(ledger_path=ledger_path) is not None:
+        typer.echo(
+            f"error: an anchor for {ledger_path.resolve()} already exists; "
+            "pass --force-reanchor to replace it",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Chain + signature verification only; the anchor itself is what we are creating.
+    if not _verify_ledger_file(ledger_path, allow_unanchored=True):
+        typer.echo("error: ledger failed verification; refusing to anchor", err=True)
+        raise typer.Exit(code=2)
+
+    last = None
+    with open(ledger_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if entry.get("type") != "checkpoint":
+                last = entry
+    if last is None:
+        typer.echo("error: ledger has no receipts to anchor", err=True)
+        raise typer.Exit(code=2)
+
+    seq = int(last.get("seq", 0))
+    r_hash = last.get("hash") or last.get("receipt_sha256", "")
+    try:
+        record_ledger_anchor(seq, r_hash, ledger_path=ledger_path)
+    except Exception as exc:
+        typer.echo(f"error: could not write anchor: {exc}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"Anchored {ledger_path.resolve()} at sequence #{seq}")
 
 
 @app.command("verify")
@@ -419,6 +598,7 @@ def verify(
     package: Optional[str] = typer.Argument(None, help="Path to a receiptd or birkin run package (.json)"),
     ledger: Optional[str] = typer.Option(None, "--ledger", help="Path to the JSONL receipt ledger."),
     pubkey: Optional[str] = typer.Option(None, "--pubkey", help="Path or string of Ed25519 public key for verification."),
+    allow_unanchored: bool = typer.Option(False, "--allow-unanchored", help="Allow verification without comparing against local recorded anchor state."),
     format: str = typer.Option("table", "--format", help="Output format: table or json"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Print verdict only"),
 ) -> None:
@@ -430,7 +610,7 @@ def verify(
             ledger = ".birkin/receipts.jsonl"
 
     if ledger:
-        ok = _verify_ledger_file(Path(ledger), format_type=format, pubkey=pubkey)
+        ok = _verify_ledger_file(Path(ledger), format_type=format, pubkey=pubkey, allow_unanchored=allow_unanchored)
         if not ok:
             raise typer.Exit(code=2)
         return

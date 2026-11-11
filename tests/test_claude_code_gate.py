@@ -57,35 +57,46 @@ def test_evaluate_payload_allows_safe_tool():
 
 
 def test_ledger_tamper_detection(tmp_path: Path):
+    from receiptd.crypto import SigningKey, canonical_json_subset
+    from receiptd.ledger import SIGNABLE_RECEIPT_FIELDS, build_signed_receipt
+
     ledger = tmp_path / "receipts.jsonl"
+    sk = SigningKey.generate()
 
     prev = "0" * 64
-    lines = []
     for i in range(3):
-        core = {
-            "step": i,
-            "tool_name": "Bash",
-            "decision": "ALLOWED_VERIFIED",
-            "prev_receipt_hash": prev,
-        }
-        h = sha256_hex(canonicalize_jcs(core))
-        core["receipt_sha256"] = h
-        prev = h
-        lines.append(canonicalize_jcs(core))
+        r = build_signed_receipt(
+            sk=sk,
+            v=1,
+            seq=i + 1,
+            ts="2026-11-10T12:00:00Z",
+            session_id="test",
+            tool="Bash",
+            args_sha256="0" * 64,
+            decision="allow",
+            rule_ids=[],
+            blast_radius=0,
+            reason="ok",
+            policy_sha256="0" * 64,
+            prev_hash=prev,
+        )
+        prev = r["hash"]
+        with open(ledger, "a", encoding="utf-8") as f:
+            f.write(json.dumps(r) + "\n")
 
-    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pub_pem = sk.public_pem_bytes.decode("ascii")
 
     # 1. Authentic ledger passes
-    assert _verify_ledger_file(ledger) is True
+    assert _verify_ledger_file(ledger, pubkey=pub_pem, allow_unanchored=True) is True
 
     # 2. 1-byte tamper breaks verification
-    tampered_lines = list(lines)
-    tampered_entry = json.loads(tampered_lines[1])
-    tampered_entry["step"] = 99  # 1-byte payload mutate without recomputing hash
-    tampered_lines[1] = json.dumps(tampered_entry)
-    ledger.write_text("\n".join(tampered_lines) + "\n", encoding="utf-8")
+    lines = ledger.read_text(encoding="utf-8").strip().split("\n")
+    tampered_entry = json.loads(lines[1])
+    tampered_entry["blast_radius"] = 99  # 1-byte payload mutate without recomputing hash
+    lines[1] = json.dumps(tampered_entry)
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    assert _verify_ledger_file(ledger) is False
+    assert _verify_ledger_file(ledger, pubkey=pub_pem, allow_unanchored=True) is False
 
 
 @pytest.mark.parametrize(
