@@ -28,15 +28,16 @@ from ..ledger import (
     build_signed_checkpoint,
     build_signed_receipt,
     build_unsigned_signing_error_receipt,
+    lock_ledger,
     read_ledger_state,
     record_ledger_anchor,
 )
 
-# Default high-risk deterministic signatures
+# Default high-risk deterministic signatures for common destructive and exfiltration patterns
 DEFAULT_RULES = [
-    ("POL-01:ENV_EXFILTRATION", 95, re.compile(r"(\.env|AWS_SECRET|PRIVATE_KEY|curl\s+.*-d|wget\s+.*--post)", re.I)),
-    ("POL-02:DESTRUCTIVE_DDL_OR_FS", 90, re.compile(r"(\bDROP\s+TABLE\b|\bTRUNCATE\b|rm\s+-rf\s+[/~*]|mkfs|/etc/passwd)", re.I)),
-    ("POL-03:PRIVILEGE_ESCALATION", 85, re.compile(r"(\bsudo\b|chmod\s+777|chown\s+root|\.claude/settings\.json)", re.I)),
+    ("POL-01:ENV_EXFILTRATION", 95, re.compile(r"(\.env|\.aws/credentials|\.ssh/id_[a-zA-Z0-9_-]+|id_rsa|id_ed25519|AWS_SECRET|AWS_ACCESS_KEY|PRIVATE_KEY|curl\s+.*(-d|-F|-T|--data|--upload-file)|wget\s+.*(--post-data|--post-file)|\b(nc|ncat|netcat)\b)", re.I)),
+    ("POL-02:DESTRUCTIVE_DDL_OR_FS", 90, re.compile(r"(\bDROP\s+TABLE\b|\bDROP\s+DATABASE\b|\bTRUNCATE\b|\bDELETE\s+FROM\b(?![^;]*\bWHERE\b)|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*|-[a-zA-Z]*[rf]{2}[a-zA-Z]*|--recursive\s+--force|--force\s+--recursive)\s+[/~*]|\bfind\s+.*\s+-delete\b|\bgit\s+push\s+.*(--force|-f\b|\+)|mkfs|/etc/passwd)", re.I)),
+    ("POL-03:PRIVILEGE_ESCALATION", 85, re.compile(r"(\bsudo\b|chmod\s+777|chown\s+root|\.claude/settings(\.local)?\.json)", re.I)),
 ]
 
 
@@ -84,25 +85,26 @@ def _resolve_ledger_path(argv: list[str]) -> str:
 def _write_deadline_receipt(deadline_ms: int) -> None:
     """Append an unsigned deny receipt. Unsigned because key loading may be what hung."""
     ledger_path = _CTX["ledger_path"]
-    prev_hash, _, receipt_count, _, _ = read_ledger_state(ledger_path)
-    tool_input = _CTX.get("tool_input", {})
-    receipt = build_unsigned_signing_error_receipt(
-        v=1,
-        seq=receipt_count + 1,
-        ts=datetime.now(timezone.utc).isoformat(),
-        session_id=_CTX.get("session_id", "default"),
-        tool=_CTX.get("tool_name", ""),
-        args_sha256=sha256_hex(canonical_json(tool_input)),
-        decision="deny",
-        rule_ids=["HOOK_DEADLINE_EXCEEDED"],
-        blast_radius=100,
-        reason=f"receiptd: hook deadline exceeded ({deadline_ms}ms)",
-        policy_sha256=_CTX.get("policy_sha256", ""),
-        prev_hash=prev_hash,
-        extra_fields={"latency_ms": deadline_ms, "tool_input": tool_input},
-    )
-    append_ledger_entry(ledger_path, receipt)
-    record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path)
+    with lock_ledger(ledger_path):
+        prev_hash, _, receipt_count, _, _ = read_ledger_state(ledger_path)
+        tool_input = _CTX.get("tool_input", {})
+        receipt = build_unsigned_signing_error_receipt(
+            v=1,
+            seq=receipt_count + 1,
+            ts=datetime.now(timezone.utc).isoformat(),
+            session_id=_CTX.get("session_id", "default"),
+            tool=_CTX.get("tool_name", ""),
+            args_sha256=sha256_hex(canonical_json(tool_input)),
+            decision="deny",
+            rule_ids=["HOOK_DEADLINE_EXCEEDED"],
+            blast_radius=100,
+            reason=f"receiptd: hook deadline exceeded ({deadline_ms}ms)",
+            policy_sha256=_CTX.get("policy_sha256", ""),
+            prev_hash=prev_hash,
+            extra_fields={"latency_ms": deadline_ms, "tool_input": tool_input},
+        )
+        append_ledger_entry(ledger_path, receipt)
+        record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path)
 
 
 def _on_deadline(deadline_ms: int) -> None:
@@ -239,82 +241,87 @@ def _run() -> int:
             policy_sha256=policy_sha256,
         )
 
-        # Read existing ledger state
-        prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
-        seq = receipt_count + 1
-        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-
-        # Attempt to load signing key
-        sk: SigningKey
+        # Attempt to load signing key before acquiring ledger lock (so if key loading hangs, the lock is not held)
+        sk: SigningKey | None = None
+        signing_failed = False
         try:
             sk = get_signing_key()
         except Exception:
-            # Signing failure must fail-closed with exit 2 and write an unsigned deny receipt
-            unsigned_receipt = build_unsigned_signing_error_receipt(
+            signing_failed = True
+
+        # Read existing ledger state and write next receipt under exclusive inter-process lock
+        with lock_ledger(ledger_path):
+            prev_hash, last_cp_hash, receipt_count, last_cp_seq, uncheckpointed = read_ledger_state(ledger_path)
+            seq = receipt_count + 1
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+            if signing_failed or sk is None:
+                # Signing failure must fail-closed with exit 2 and write an unsigned deny receipt
+                unsigned_receipt = build_unsigned_signing_error_receipt(
+                    v=1,
+                    seq=seq,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    session_id=session_id,
+                    tool=tool_name,
+                    args_sha256=args_sha256,
+                    decision="deny",
+                    rule_ids=triggered,
+                    blast_radius=score,
+                    reason="receiptd: signing unavailable",
+                    policy_sha256=policy_sha256,
+                    prev_hash=prev_hash,
+                    extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
+                )
+                with _LEDGER_LOCK:
+                    append_ledger_entry(ledger_path, unsigned_receipt)
+                    record_ledger_anchor(unsigned_receipt["seq"], unsigned_receipt["hash"], ledger_path=ledger_path)
+                    _CTX["finished"] = True
+                sys.stderr.write("receiptd: signing unavailable\n")
+                return 2
+
+            # Key loaded successfully: construct signed receipt
+            receipt = build_signed_receipt(
+                sk=sk,
                 v=1,
                 seq=seq,
                 ts=datetime.now(timezone.utc).isoformat(),
                 session_id=session_id,
                 tool=tool_name,
                 args_sha256=args_sha256,
-                decision="deny",
+                decision=decision,
                 rule_ids=triggered,
                 blast_radius=score,
-                reason="receiptd: signing unavailable",
+                reason=reason,
                 policy_sha256=policy_sha256,
                 prev_hash=prev_hash,
                 extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
             )
+            # Receipt, checkpoint, and "finished" go in one locked block so the
+            # watchdog sees either nothing written or the whole decision.
             with _LEDGER_LOCK:
-                append_ledger_entry(ledger_path, unsigned_receipt)
-                record_ledger_anchor(unsigned_receipt["seq"], unsigned_receipt["hash"], ledger_path=ledger_path)
+                try:
+                    record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
+                except Exception as exc:
+                    sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
+                    _CTX["finished"] = True
+                    return 2
+
+                append_ledger_entry(ledger_path, receipt)
+
+                # Write Merkle checkpoint if interval reached
+                uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
+                if len(uncheckpointed_hashes) >= checkpoint_interval:
+                    from_seq = last_cp_seq + 1
+                    to_seq = seq
+                    cp = build_signed_checkpoint(
+                        sk=sk,
+                        from_seq=from_seq,
+                        to_seq=to_seq,
+                        leaf_hashes=uncheckpointed_hashes,
+                        prev_checkpoint_hash=last_cp_hash,
+                    )
+                    append_ledger_entry(ledger_path, cp)
                 _CTX["finished"] = True
-            sys.stderr.write("receiptd: signing unavailable\n")
-            return 2
-
-        # Key loaded successfully: construct signed receipt
-        receipt = build_signed_receipt(
-            sk=sk,
-            v=1,
-            seq=seq,
-            ts=datetime.now(timezone.utc).isoformat(),
-            session_id=session_id,
-            tool=tool_name,
-            args_sha256=args_sha256,
-            decision=decision,
-            rule_ids=triggered,
-            blast_radius=score,
-            reason=reason,
-            policy_sha256=policy_sha256,
-            prev_hash=prev_hash,
-            extra_fields={"latency_ms": latency_ms, "tool_input": tool_input},
-        )
-        # Receipt, checkpoint, and "finished" go in one locked block so the
-        # watchdog sees either nothing written or the whole decision.
-        with _LEDGER_LOCK:
-            try:
-                record_ledger_anchor(receipt["seq"], receipt["hash"], ledger_path=ledger_path, sk=sk)
-            except Exception as exc:
-                sys.stderr.write(f"receiptd: anchor write failed: {exc}\n")
-                _CTX["finished"] = True
-                return 2
-
-            append_ledger_entry(ledger_path, receipt)
-
-            # Write Merkle checkpoint if interval reached
-            uncheckpointed_hashes = [r["hash"] for r in uncheckpointed] + [receipt["hash"]]
-            if len(uncheckpointed_hashes) >= checkpoint_interval:
-                from_seq = last_cp_seq + 1
-                to_seq = seq
-                cp = build_signed_checkpoint(
-                    sk=sk,
-                    from_seq=from_seq,
-                    to_seq=to_seq,
-                    leaf_hashes=uncheckpointed_hashes,
-                    prev_checkpoint_hash=last_cp_hash,
-                )
-                append_ledger_entry(ledger_path, cp)
-            _CTX["finished"] = True
 
         if blocked:
             sys.stderr.write(

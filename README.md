@@ -6,13 +6,13 @@
 
 **Cryptographic authorization receipts, 0.02ms in-process policy checks (~78ms cold CLI hook), and offline hash-chain verification for autonomous AI agents.**
 
-[![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
+[![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://sandbox.auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
 [![Cryptography](https://img.shields.io/badge/crypto-Ed25519_%2B_canonical_JSON_(sorted_keys)-0B0D11?style=flat-square)](#cryptographic-receipt-specification)
 [![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic execution boundary outside the model runtime for every action routed through its hooks (see Honest limitations)—the PreToolUse gate fails closed on unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~78 ms cold CLI hook), while the Stop hook prevents premature completion until tests pass (giving up after 3 retries with a signed `gave_up` receipt). Every action emits an offline-verifiable **Ed25519 cryptographic receipt**.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces deterministic policy gates outside the model runtime for every action routed through its hooks (see Honest limitations)—the PreToolUse gate fails closed on unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~78 ms cold CLI hook), while the Stop hook prevents premature completion until tests pass (giving up after 3 retries with a signed `gave_up` receipt). Every action emits an offline-verifiable **Ed25519 cryptographic receipt**.
 
 **Receiptd gates both ends: before each tool call and before the agent says it's done.**
 * **PreToolUse Gate (exit 2):** Fails closed before any shell, SQL, or tool mutation executes.
@@ -82,7 +82,7 @@ pip install git+https://github.com/NickAltstein/receiptd && receiptd init --clau
 ```
 
 ### 1. PreToolUse Gate: Intercept Actions Before Execution
-Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Receiptd evaluates the canonicalized JSON-RPC payload outside the model before execution:
+Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Receiptd evaluates the canonicalized JSON-RPC payload outside the model before execution. It includes default deterministic rules for high-risk exfiltration, destructive filesystem/DDL commands, and privilege escalation (`receiptd/hooks/claude_code_gate.py`), which can be extended with custom project policies:
 
 ```text
 [RECEIPTD HARD BLOCK] BLOCKED_FAIL_CLOSED (decision 0.94 ms in-hook, excludes Python startup)

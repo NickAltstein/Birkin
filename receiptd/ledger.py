@@ -234,6 +234,32 @@ def build_signed_checkpoint(
     return cp_record
 
 
+from contextlib import contextmanager
+import fcntl
+
+
+@contextmanager
+def lock_ledger(ledger_path: str | Path):
+    """Acquire an exclusive inter-process file lock on the ledger lockfile.
+
+    Serializes ledger reads, signing, and appends across concurrent hook processes
+    so sequence numbers and hash chains remain contiguous without race conditions.
+    """
+    path = Path(ledger_path).resolve()
+    lock_path = path.parent / f".{path.name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        try:
+            os.chmod(lock_path, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def append_ledger_entry(ledger_path: str | Path, entry: dict[str, Any]) -> None:
     path = Path(ledger_path)
     if path.parent:
