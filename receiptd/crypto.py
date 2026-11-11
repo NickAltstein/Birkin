@@ -28,9 +28,11 @@ Design notes
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -193,6 +195,65 @@ def get_key_dir() -> Path:
     return Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
 
 
+def create_file_exclusive(path: Path, data: bytes, mode: int) -> bool:
+    """Create ``path`` holding ``data`` only if it does not exist yet.
+
+    The data goes to a temp file first and is hard-linked into place, so a
+    reader never sees a half-written file and exactly one of several
+    concurrent creators wins. Returns True if this call created the file,
+    False if it already existed.
+    """
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            if exc.errno not in {errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                raise
+            # Filesystems without hard links: fall back to an exclusive create
+            # of the final path. Readers retry via read_key_file.
+            return _create_exclusive_in_place(path, data, mode)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _create_exclusive_in_place(path: Path, data: bytes, mode: int) -> bool:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    return True
+
+
+def read_key_file(path: Path, attempts: int = 50) -> bytes:
+    """Read a PEM key, waiting briefly for an in-place writer to finish."""
+    for _ in range(attempts):
+        try:
+            blob = path.read_bytes()
+            lines = blob.rstrip().splitlines()
+            if lines and lines[-1].startswith(b"-----END ") and lines[-1].endswith(b"-----"):
+                return blob
+        except FileNotFoundError:
+            pass
+        time.sleep(0.01)
+    raise FileNotFoundError(f"key file not readable: {path}")
+
+
 def get_signing_key(key_dir: Path | None = None) -> SigningKey:
     """Load or generate the persistent Ed25519 signing key.
 
@@ -209,33 +270,31 @@ def get_signing_key(key_dir: Path | None = None) -> SigningKey:
         except Exception:
             return SigningKey.from_private_bytes(env_key_clean.encode("utf-8"))
 
-    target_dir = key_dir or get_key_dir()
+    return load_or_create_signing_key(key_dir or get_key_dir())
+
+
+def load_or_create_signing_key(target_dir: Path) -> SigningKey:
+    """Load the shared on-disk signer and publish its public key if missing."""
     priv_path = target_dir / "receiptd_ed25519.pem"
     pub_path = target_dir / "receiptd_ed25519.pub.pem"
 
     if priv_path.exists():
-        blob = priv_path.read_bytes()
-        return SigningKey.from_pem(blob)
+        sk = SigningKey.from_pem(read_key_file(priv_path))
+    else:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(target_dir, 0o700)
+        except OSError:
+            pass
 
-    target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(target_dir, 0o700)
-    except OSError:
-        pass
+        sk = SigningKey.generate()
+        if not create_file_exclusive(priv_path, sk.pem_bytes, 0o600):
+            sk = SigningKey.from_pem(read_key_file(priv_path))
 
-    sk = SigningKey.generate()
-    priv_path.write_bytes(sk.pem_bytes)
-    try:
-        os.chmod(priv_path, 0o600)
-    except OSError:
-        pass
-
-    pub_path.write_bytes(sk.public_pem_bytes)
-    try:
-        os.chmod(pub_path, 0o644)
-    except OSError:
-        pass
-
+    # Any caller can finish publication if the private-key creator was interrupted.
+    if not pub_path.exists():
+        create_file_exclusive(pub_path, sk.public_pem_bytes, 0o644)
+    read_key_file(pub_path)
     return sk
 
 

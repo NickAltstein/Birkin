@@ -21,45 +21,19 @@ import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from ..crypto import load_or_create_signing_key
 
 def _get_key_paths():
     key_dir = Path(os.environ.get("RECEIPTD_KEY_DIR", Path.home() / ".receiptd"))
     return key_dir, key_dir / "receiptd_ed25519.pem", key_dir / "receiptd_ed25519.pub.pem"
 
 
-def _generate_key_pair():
-    private = Ed25519PrivateKey.generate()
-    return private
-
-
 def _load_or_create_key():
-    """The process-wide Ed25519 private key (created on first use)."""
-    key_dir, private_key_path, public_key_path = _get_key_paths()
-    key_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(key_dir, 0o700)
-    except OSError:
-        pass
-    if private_key_path.exists():
-        blob = private_key_path.read_bytes()
-        return serialization.load_pem_private_key(blob, password=None)
-    private = _generate_key_pair()
-    private_key_path.write_bytes(
-        private.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    os.chmod(private_key_path, 0o600)
-    public_key_path.write_bytes(
-        private.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
-    return private
+    """Load the same on-disk Ed25519 key used by hook receipts."""
+    key_dir, _, _ = _get_key_paths()
+    signer = load_or_create_signing_key(key_dir)
+    return serialization.load_pem_private_key(signer.pem_bytes, password=None)
 
 
 # ---------------------------------------------------------------------------
