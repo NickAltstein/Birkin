@@ -1,0 +1,26 @@
+{
+  "format": "receiptd.pretooluse.v1",
+  "description": "Default PreToolUse rules. The hook hashes these file bytes and evaluates the rules parsed from the same bytes.",
+  "base_score": 10,
+  "deny_at": 75,
+  "rules": [
+    {
+      "id": "POL-01:ENV_EXFILTRATION",
+      "weight": 95,
+      "ignore_case": true,
+      "pattern": "(\\.env|\\.aws/credentials|\\.ssh/id_[a-zA-Z0-9_-]+|id_rsa|id_ed25519|AWS_SECRET|AWS_ACCESS_KEY|PRIVATE_KEY|curl\\s+.*(-d|-F|-T|--data|--upload-file)|wget\\s+.*(--post-data|--post-file)|\\b(nc|ncat|netcat)\\b)"
+    },
+    {
+      "id": "POL-02:DESTRUCTIVE_DDL_OR_FS",
+      "weight": 90,
+      "ignore_case": true,
+      "pattern": "(\\bDROP\\s+TABLE\\b|\\bDROP\\s+DATABASE\\b|\\bTRUNCATE\\b|\\bDELETE\\s+FROM\\b(?![^;]*\\bWHERE\\b)|rm\\s+(-[a-zA-Z]*r[a-zA-Z]*\\s+-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*\\s+-[a-zA-Z]*r[a-zA-Z]*|-[a-zA-Z]*[rf]{2}[a-zA-Z]*|--recursive\\s+--force|--force\\s+--recursive)\\s+[/~*]|\\bfind\\s+.*\\s+-delete\\b|\\bgit\\s+push\\s+.*(--force|-f\\b|\\+)|mkfs|/etc/passwd)"
+    },
+    {
+      "id": "POL-03:PRIVILEGE_ESCALATION",
+      "weight": 85,
+      "ignore_case": true,
+      "pattern": "(\\bsudo\\b|chmod\\s+777|chown\\s+root|\\.claude/settings(\\.local)?\\.json)"
+    }
+  ]
+}

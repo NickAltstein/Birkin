@@ -20,10 +20,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 GENESIS_HASH = "0" * 64
 
-# UTF-8 label hashed into policy_sha256 when the PreToolUse hook does not
-# hash a policy document. See docs/receipt-format.md, Limitations.
+# Receipts written before policy bytes were hashed store SHA-256 of this
+# label, not of a policy file. See docs/receipt-format.md, Limitations.
 POLICY_LABEL = "DEFAULT_RULES:POL-01,POL-02,POL-03"
-CONSTANT_POLICY_SHA256 = hashlib.sha256(POLICY_LABEL.encode("utf-8")).hexdigest()
+LEGACY_POLICY_SHA256 = hashlib.sha256(POLICY_LABEL.encode("utf-8")).hexdigest()
 
 SIGNABLE_RECEIPT_FIELDS = (
     "args_sha256",
@@ -106,16 +106,18 @@ def verify_ed25519(public_key: str, signature: str, message: bytes) -> bool:
 
 
 def policy_report(seq, claimed) -> str:
-    """State the claimed policy_sha256. Never treats it as a checked policy."""
-    if claimed == CONSTANT_POLICY_SHA256:
+    """State the claimed policy_sha256. This checker does not recompute it."""
+    if claimed == LEGACY_POLICY_SHA256:
         return (
             f"policy_sha256 seq #{seq}: {claimed}\n"
-            f'  fixed label hash of "{POLICY_LABEL}"; policy text was not checked'
+            f'  legacy fixed label hash of "{POLICY_LABEL}"; '
+            "the rules that ran were not inputs to this hash; policy text was not checked"
         )
     if claimed:
         return (
             f"policy_sha256 seq #{seq}: {claimed}\n"
-            "  claimed digest only; policy text was not checked"
+            "  recorded digest of policy bytes; this checker does not have those bytes "
+            "and did not recompute the digest; policy text was not checked"
         )
     return f"policy_sha256 seq #{seq}: absent; policy text was not checked"
 

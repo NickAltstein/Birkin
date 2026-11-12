@@ -100,30 +100,25 @@ def version() -> None:
 @app.command("init")
 def init(
     claude_code: bool = typer.Option(True, "--claude-code", help="Wire .claude/settings.json PreToolUse hook gate."),
-    policy_path: str = typer.Option(".birkin/strict.yaml", "--policy-path", help="Path to fail-closed policy configuration."),
+    policy_path: str = typer.Option(
+        ".birkin/pretooluse.policy.json",
+        "--policy-path",
+        help="Path of the PreToolUse policy JSON the hook loads and hashes.",
+    ),
 ) -> None:
     """Initialize Receiptd runtime hooks and audit structures in the local repository."""
     typer.echo("Initializing Receiptd Zero-Trust Agent Firewall...")
 
     os.makedirs(".birkin", exist_ok=True)
 
-    # 1. Write default strict policy if missing
+    # 1. Write the packaged PreToolUse policy if the project file is missing.
+    # The hook reads this path once and both enforces and hashes those bytes.
     if not os.path.exists(policy_path):
-        default_policy = (
-            "version: '1.0'\n"
-            "mode: FAIL_CLOSED\n"
-            "rules:\n"
-            "  - id: POL-01\n"
-            "    name: NO_ENV_EXFILTRATION\n"
-            "    pattern: '(\\.env|AWS_SECRET|PRIVATE_KEY|curl.*-d)'\n"
-            "    action: BLOCK_FAIL_CLOSED\n"
-            "  - id: POL-02\n"
-            "    name: NO_DESTRUCTIVE_DDL\n"
-            "    pattern: '(DROP\\s+TABLE|TRUNCATE|rm\\s+-rf)'\n"
-            "    action: BLOCK_FAIL_CLOSED\n"
-        )
-        with open(policy_path, "w", encoding="utf-8") as f:
-            f.write(default_policy)
+        from .hooks.claude_code_gate import default_policy_path
+
+        policy_bytes = default_policy_path().read_bytes()
+        with open(policy_path, "wb") as f:
+            f.write(policy_bytes)
         typer.echo(f"  [+] Created default policy: {policy_path}")
 
     # 2. Wire Claude Code PreToolUse Hook if requested
