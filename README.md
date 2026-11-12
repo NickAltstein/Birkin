@@ -68,7 +68,7 @@ Experience live MCP interception, WebCrypto `Ed25519` signing, and 1-byte ledger
 | **Legitimate Read / Test Suite** | `pytest -q tests/test_crypto.py` | `ALLOWED_VERIFIED` (Exit `0`) | `0.88 ms` | `✓ AUTHENTIC (Ed25519 + Chain Valid)` |
 | **Post-Execution Log Tampering** | *1 byte modified in `.receiptd/receipts.jsonl`* | *N/A (Post-Run Audit)* | `0.42 ms` | **`✗ TAMPERED (Hash & Sig Mismatch)`** |
 
-\* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~78 ms (77.5 ms mean; 82.4 ms p95, from `benchmarks/results.json`). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
+\* *In-hook decision time is the `latency_ms` value recorded in each receipt: `perf_counter` wall time inside the hook process after Python has started (policy evaluation, signing, ledger append). It excludes interpreter startup; a full cold hook invocation is ~78 ms (77.5 ms mean; 82.4 ms p95, from `benchmarks/results.json` at commit 82691be). The per-row figures are from sample demo runs and vary by machine; the reproducible benchmark is `benchmarks/benchmark_overhead.py` (see Performance Benchmarks). For the tamper row, the figure is verifier time, not hook time.*
 
 ---
 
@@ -202,7 +202,7 @@ Measured on Apple Silicon across 1,000 sequential tool call evaluations (`benchm
 | **Receiptd In-Process Interceptor (Policy + Signing)** | **0.021 ms** | **0.033 ms (p99)** | **0 bytes (100% Local)** |
 | **Full Claude Code Hook Execution (Cold Python Process)** | **77.5 ms** | **82.4 ms (p95)** | **0 bytes (100% Local)** |
 
-Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed results: `benchmarks/results.json` (measured after Ed25519 signing was added; component rows report means only). Earlier ~67 ms cold-hook figures predate signing and are obsolete.
+Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed results: `benchmarks/results.json` at commit 82691be (1,000 samples, measured after Ed25519 signing was added; component rows report means only): 0.021 ms mean in-process and 77.5 ms mean / 82.4 ms p95 for a cold hook process. Earlier ~67 ms and 89.1 ms cold-hook figures are superseded.
 
 ---
 

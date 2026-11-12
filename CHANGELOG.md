@@ -13,7 +13,7 @@
 - Replaced legacy regex-based trifecta scanner (`receiptd/trifecta.py`) with full `receiptd.card` pipeline.
 - Updated `receiptd card` command with `--session`, `--last`, `--out`, and `--redact-paths` flags.
 - Package classifier updated to `Development Status :: 4 - Beta`.
-- Updated benchmarks in package description to reflect measured 0.02ms in-process evaluation and ~67ms cold CLI hook latency.
+- Updated benchmarks in package description to reflect measured 0.02ms in-process evaluation and ~78ms cold CLI hook latency (`benchmarks/results.json`, commit 82691be).
 
 ## [0.2.0] - 2026-11-05
 
