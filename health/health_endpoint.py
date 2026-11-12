@@ -15,6 +15,7 @@ from flask import Flask, jsonify
 app = Flask(__name__)
 
 # Configuration from environment
+HEALTH_HOST = os.environ.get("HEALTH_HOST", "127.0.0.1")
 HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "9999"))
 HERMES_AUDIT_DB = os.environ.get("HERMES_AUDIT_DB", os.path.expanduser("~/.hermes/audit.db"))
 HERMES_SKILLS_DIR = os.environ.get("HERMES_SKILLS_DIR", os.path.expanduser("~/.hermes/skills"))
@@ -130,6 +131,6 @@ def health_detailed():
 
 
 if __name__ == "__main__":
-    print(f"[Health Endpoint] Starting on port {HEALTH_PORT}")
+    print(f"[Health Endpoint] Starting on {HEALTH_HOST}:{HEALTH_PORT}")
     # Use threaded=True for concurrent health checks
-    app.run(host="0.0.0.0", port=HEALTH_PORT, threaded=True)
+    app.run(host=HEALTH_HOST, port=HEALTH_PORT, threaded=True)
