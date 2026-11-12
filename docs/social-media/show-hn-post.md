@@ -4,7 +4,7 @@
 
 I was worried my local AI agent would go rogue. So I built Birkin—a governance layer for Hermes with three features that aren't available anywhere else:
 
-1. **Immutable audit log** — every action is hashed into a chain. If someone (including the agent) tries to cover its tracks, the hash chain catches it. Unlike append-only logs, this is *provably* tamper-evident.
+1. **Tamper-evident audit log** — every action is hashed into a chain. If someone (including the agent) tries to cover its tracks, the hash chain catches it. Unlike append-only logs, an altered record fails verification.
 
 2. **Tamper test** — literally replace the audit.db file and run verify-chain.py. It detects the swap. Works in CI.
 
