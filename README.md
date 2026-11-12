@@ -208,6 +208,8 @@ Run the benchmark locally: `python3 benchmarks/benchmark_overhead.py`. Committed
 
 ## Cryptographic Receipt Specification
 
+Ledger byte format: [docs/receipt-format.md](docs/receipt-format.md).
+
 Every evaluated tool call emits a deterministic receipt verifiable offline via `receiptd verify --ledger <path>`:
 
 ```json
