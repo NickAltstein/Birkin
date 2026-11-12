@@ -4,7 +4,7 @@ import tempfile
 import pytest
 from typer.testing import CliRunner
 from receiptd.cli import app
-from receiptd.hooks.claude_code_stop_gate import run_stop_gate
+from receiptd.hooks.claude_code_stop_gate import run_stop_gate, sha256_hex
 
 runner = CliRunner()
 
@@ -27,6 +27,8 @@ def test_stop_gate_pass_records_receipt():
             assert receipt["event_type"] == "STOP_GATE"
             assert receipt["decision"] == "ALLOWED_VERIFIED"
             assert receipt["test_exit_code"] == 0
+            assert receipt["policy_sha256"] == ""
+            assert receipt["args_sha256"] == sha256_hex("true")
             assert "receipt_sha256" in receipt
             assert "sig" in receipt
 
