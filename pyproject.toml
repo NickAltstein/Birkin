@@ -47,6 +47,7 @@ include = ["receiptd*", "birkin*"]
 
 [tool.setuptools.package-data]
 "receiptd.card" = ["rules.yaml"]
+"receiptd.hooks" = ["default_pretooluse.policy.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

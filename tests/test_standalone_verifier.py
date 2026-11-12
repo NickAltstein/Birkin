@@ -147,10 +147,11 @@ def test_clean_and_one_byte_tamper_agree(tmp_path: Path):
     assert clean_own.returncode == 0
     assert clean_own.returncode == clean_ref.exit_code
     assert "VERDICT: AUTHENTIC" in clean_own.stdout
-    assert "fixed label hash" in clean_own.stdout
+    assert "legacy fixed label hash" in clean_own.stdout
     assert POLICY_LABEL in clean_own.stdout
+    assert "were not inputs to this hash" in clean_own.stdout
+    assert "did not recompute the digest" in clean_own.stdout
     assert "policy text was not checked" in clean_own.stdout
-    assert "claimed digest only" in clean_own.stdout
     lowered = clean_own.stdout.lower()
     assert "policy verified" not in lowered
     assert "policy version verified" not in lowered

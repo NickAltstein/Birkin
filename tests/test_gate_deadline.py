@@ -91,6 +91,14 @@ def test_init_hook_timeout_above_default_deadline(tmp_path: Path):
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     gate = settings["hooks"]["PreToolUse"][0]["hooks"][0]
     assert gate["timeout"] * 1000 > DEFAULT_DEADLINE_MS
+    from receiptd.hooks.claude_code_gate import default_policy_path
+
+    written = tmp_path / ".birkin" / "pretooluse.policy.json"
+    assert written.read_bytes() == default_policy_path().read_bytes()
+    assert gate["command"] == (
+        "python3 -m receiptd.hooks.claude_code_gate "
+        "--policy .birkin/pretooluse.policy.json --ledger .birkin/receipts.jsonl"
+    )
 
 
 @needs_fifo

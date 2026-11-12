@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,12 +34,135 @@ from ..ledger import (
     record_ledger_anchor,
 )
 
-# Default high-risk deterministic signatures for common destructive and exfiltration patterns
-DEFAULT_RULES = [
-    ("POL-01:ENV_EXFILTRATION", 95, re.compile(r"(\.env|\.aws/credentials|\.ssh/id_[a-zA-Z0-9_-]+|id_rsa|id_ed25519|AWS_SECRET|AWS_ACCESS_KEY|PRIVATE_KEY|curl\s+.*(-d|-F|-T|--data|--upload-file)|wget\s+.*(--post-data|--post-file)|\b(nc|ncat|netcat)\b)", re.I)),
-    ("POL-02:DESTRUCTIVE_DDL_OR_FS", 90, re.compile(r"(\bDROP\s+TABLE\b|\bDROP\s+DATABASE\b|\bTRUNCATE\b|\bDELETE\s+FROM\b(?![^;]*\bWHERE\b)|rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*|-[a-zA-Z]*[rf]{2}[a-zA-Z]*|--recursive\s+--force|--force\s+--recursive)\s+[/~*]|\bfind\s+.*\s+-delete\b|\bgit\s+push\s+.*(--force|-f\b|\+)|mkfs|/etc/passwd)", re.I)),
-    ("POL-03:PRIVILEGE_ESCALATION", 85, re.compile(r"(\bsudo\b|chmod\s+777|chown\s+root|\.claude/settings(\.local)?\.json)", re.I)),
-]
+# Shipped default. The hook reads this file once and both evaluates and hashes those bytes.
+POLICY_FORMAT = "receiptd.pretooluse.v1"
+_DEFAULT_POLICY_NAME = "default_pretooluse.policy.json"
+
+
+class PolicyLoadError(Exception):
+    """The policy file cannot be enforced. kind is missing, unreadable, or invalid."""
+
+    def __init__(self, kind: str, message: str, raw: bytes | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.raw = raw
+
+    @property
+    def rule_id(self) -> str:
+        return f"POLICY_{self.kind.upper()}"
+
+    @property
+    def reason(self) -> str:
+        return f"receiptd: policy {self.kind}"
+
+
+@dataclass(frozen=True)
+class HookRule:
+    id: str
+    weight: int
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True)
+class HookPolicy:
+    base_score: int
+    deny_at: int
+    rules: tuple[HookRule, ...]
+
+
+def default_policy_path() -> Path:
+    """Path of the packaged default policy. The file bytes are the policy."""
+    return Path(__file__).resolve().parent / _DEFAULT_POLICY_NAME
+
+
+def _require_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < 0 or value > 100:
+        raise ValueError(f"{name} must be from 0 to 100")
+    return value
+
+
+def parse_policy(data: bytes) -> HookPolicy:
+    """Parse a PreToolUse policy from the exact bytes that will be hashed."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("policy is not UTF-8") from exc
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("policy is not JSON") from exc
+    if not isinstance(spec, dict):
+        raise ValueError("policy must be a JSON object")
+    if spec.get("format") != POLICY_FORMAT:
+        raise ValueError(f"policy format must be {POLICY_FORMAT}")
+    base_score = _require_int(spec.get("base_score"), "base_score")
+    deny_at = _require_int(spec.get("deny_at"), "deny_at")
+    raw_rules = spec.get("rules")
+    if not isinstance(raw_rules, list):
+        raise ValueError("policy rules must be a list")
+    rules: list[HookRule] = []
+    for index, raw in enumerate(raw_rules):
+        if not isinstance(raw, dict):
+            raise ValueError(f"rule {index} must be an object")
+        rule_id = raw.get("id")
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            raise ValueError(f"rule {index} id must be a non-empty string")
+        weight = _require_int(raw.get("weight"), f"rule {index} weight")
+        pattern = raw.get("pattern")
+        if not isinstance(pattern, str):
+            raise ValueError(f"rule {index} pattern must be a string")
+        ignore_case = raw.get("ignore_case")
+        if not isinstance(ignore_case, bool):
+            raise ValueError(f"rule {index} ignore_case must be a boolean")
+        flags = re.IGNORECASE if ignore_case else 0
+        try:
+            compiled = re.compile(pattern, flags)
+        except re.error as exc:
+            raise ValueError(f"rule {index} pattern is not a valid regex") from exc
+        rules.append(HookRule(id=rule_id, weight=weight, pattern=compiled))
+    return HookPolicy(base_score=base_score, deny_at=deny_at, rules=tuple(rules))
+
+
+def load_policy_file(path: Path) -> tuple[bytes, HookPolicy]:
+    """Read path once. The returned bytes are the hash preimage and the parsed rules."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise PolicyLoadError("missing", f"policy file not found: {path}") from exc
+    except OSError as exc:
+        raise PolicyLoadError("unreadable", f"policy file unreadable: {path}: {exc}") from exc
+    try:
+        policy = parse_policy(data)
+    except ValueError as exc:
+        raise PolicyLoadError("invalid", f"invalid policy: {exc}", raw=data) from exc
+    return data, policy
+
+
+def policy_path_from_argv(argv: list[str]) -> Path:
+    """Return --policy PATH, or the packaged default when the flag is absent."""
+    for index, arg in enumerate(argv):
+        if arg != "--policy":
+            continue
+        if index + 1 >= len(argv) or not argv[index + 1] or argv[index + 1].startswith("--"):
+            raise PolicyLoadError("missing", "--policy requires a path")
+        return Path(argv[index + 1])
+    return default_policy_path()
+
+
+def load_policy_from_argv(argv: list[str]) -> tuple[HookPolicy | None, str, PolicyLoadError | None]:
+    """Load the policy for this process from a single read of one path."""
+    try:
+        path = policy_path_from_argv(argv)
+    except PolicyLoadError as exc:
+        return None, "", exc
+    try:
+        data, policy = load_policy_file(path)
+    except PolicyLoadError as exc:
+        digest = sha256_hex(exc.raw) if exc.raw is not None else ""
+        return None, digest, exc
+    return policy, sha256_hex(data), None
 
 
 # Hook deadline. Claude Code lets the tool call through when a PreToolUse hook
@@ -146,7 +270,8 @@ def sha256_hex(data: str | bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
+def evaluate_payload(payload: dict, policy: HookPolicy | None = None) -> tuple[bool, int, list[str]]:
+    """Score one tool call with the given policy. The default is the packaged file."""
     tool_name = payload.get("tool_name")
     if not isinstance(tool_name, str) or not tool_name.strip():
         return True, 100, ["MISSING_REQUIRED_FIELD"]
@@ -155,19 +280,24 @@ def evaluate_payload(payload: dict) -> tuple[bool, int, list[str]]:
     if not isinstance(tool_input, dict):
         return True, 100, ["MISSING_REQUIRED_FIELD"]
 
+    if policy is None:
+        try:
+            _, policy = load_policy_file(default_policy_path())
+        except PolicyLoadError as exc:
+            return True, 100, [exc.rule_id]
+
     tool_name = tool_name.strip()
-    tool_input_jcs = canonicalize_jcs(tool_input)
-    combined = f"{tool_name} {tool_input_jcs}"
+    combined = f"{tool_name} {canonicalize_jcs(tool_input)}"
 
-    score = 10
+    score = policy.base_score
     triggered = []
-    for rule_id, weight, pattern in DEFAULT_RULES:
-        if pattern.search(combined):
-            score = min(100, score + weight)
-            triggered.append(rule_id)
+    for rule in policy.rules:
+        if rule.pattern.search(combined):
+            score = min(100, score + rule.weight)
+            triggered.append(rule.id)
 
-    # Note: POL-03 specifically prevents the agent from editing .claude/settings.json to unhook Receiptd
-    blocked = len(triggered) > 0 or score >= 75
+    # Any matched rule denies. POL-03 matches edits to .claude/settings.json.
+    blocked = len(triggered) > 0 or score >= policy.deny_at
     return blocked, score, triggered
 
 
@@ -191,6 +321,12 @@ def _run() -> int:
     t0 = time.perf_counter()
     try:
         _CTX["ledger_path"] = _resolve_ledger_path(sys.argv)
+        # One read of one path. The digest and the rules both come from those bytes.
+        policy, policy_sha256, policy_error = load_policy_from_argv(sys.argv)
+        if policy is None and policy_error is None:
+            policy_error = PolicyLoadError("invalid", "policy did not load")
+        _CTX["policy_sha256"] = policy_sha256
+
         raw_stdin = sys.stdin.read()
         if not raw_stdin.strip():
             sys.stderr.write("[RECEIPTD FAIL-CLOSED] Empty stdin frame rejected.\n")
@@ -200,9 +336,17 @@ def _run() -> int:
         if not isinstance(payload, dict):
             sys.stderr.write("[RECEIPTD FAIL-CLOSED] Payload must be a JSON object.\n")
             return 2
-        blocked, score, triggered = evaluate_payload(payload)
-        decision = "deny" if blocked else "allow"
-        reason = f"triggered rules: {', '.join(triggered)}" if blocked else "allowed"
+
+        if policy is None:
+            assert policy_error is not None
+            blocked, score, triggered = True, 100, [policy_error.rule_id]
+            decision = "deny"
+            reason = policy_error.reason
+            sys.stderr.write(f"[RECEIPTD FAIL-CLOSED] {policy_error}\n")
+        else:
+            blocked, score, triggered = evaluate_payload(payload, policy)
+            decision = "deny" if blocked else "allow"
+            reason = f"triggered rules: {', '.join(triggered)}" if blocked else "allowed"
 
         ledger_path = _CTX["ledger_path"]
 
@@ -220,15 +364,6 @@ def _run() -> int:
                 checkpoint_interval = int(os.environ["RECEIPTD_CHECKPOINT_INTERVAL"])
             except ValueError:
                 pass
-
-        # Policy SHA-256
-        policy_sha256 = sha256_hex("DEFAULT_RULES:POL-01,POL-02,POL-03")
-        for i, arg in enumerate(sys.argv):
-            if arg == "--policy" and i + 1 < len(sys.argv):
-                p_file = Path(sys.argv[i + 1])
-                if p_file.exists():
-                    policy_sha256 = sha256_hex(p_file.read_bytes())
-                break
 
         tool_name = str(payload.get("tool_name", ""))
         tool_input = payload.get("tool_input", {})

@@ -53,10 +53,10 @@ These eleven names are `SIGNABLE_RECEIPT_FIELDS`. The signature input is their c
 | `tool` | string | Tool name. The Stop hook uses the string `stop_gate`. | Writer always sets it. |
 | `args_sha256` | string | 64 lowercase hex characters. PreToolUse: SHA-256 of the canonical JSON bytes of `tool_input` (missing input is hashed as `{}`). Stop hook: SHA-256 of the UTF-8 test-command string, not of a JSON object. | Writer always sets it. |
 | `decision` | string | PreToolUse writes `allow` or `deny`. Stop hook writes `ALLOWED_VERIFIED` (tests passed), `BLOCKED_FAIL_CLOSED` (tests failed), or `gave_up` (retry cap reached). Signing failure forces `deny`. | Writer always sets it. Verifier constrains it only for an unsigned receipt: that decision must be `deny`. |
-| `rule_ids` | array of strings | Rule ids that fired, in scan order. An allow with no match is `[]`. Stop hook writes `["RULE:TESTS_PASS"]`. | Writer always sets it. |
-| `blast_radius` | integer | PreToolUse starts at `10`, adds the matched rule weights, and caps at `100`. A missing tool name or a non-object `tool_input` scores `100` and is denied. Any triggered rule denies, as does a score of `75` or more. Stop success writes `0`; stop failure writes `100`. | Writer always sets it. |
-| `reason` | string | PreToolUse allow is `allowed`. A deny is `triggered rules: ` plus the ids joined by `", "`. | Writer always sets it. |
-| `policy_sha256` | string | 64 lowercase hex characters. See [Limitations](#limitations). Not a hash of the regexes that ran. | Writer always sets it. |
+| `rule_ids` | array of strings | Rule ids that fired, in scan order. An allow with no match is `[]`. A policy file that cannot be enforced writes `POLICY_MISSING`, `POLICY_UNREADABLE`, or `POLICY_INVALID`. Stop hook writes `["RULE:TESTS_PASS"]`. | Writer always sets it. |
+| `blast_radius` | integer | PreToolUse starts at the policy file's `base_score` (`10` in the shipped file), adds the matched rule weights, and caps that running total at `100`. A missing tool name or a non-object `tool_input` scores `100` and is denied before rules run. Any triggered rule denies, as does a score greater than or equal to the policy file's `deny_at` (`75` in the shipped file). Stop success writes `0`; stop failure writes `100`. | Writer always sets it. |
+| `reason` | string | PreToolUse allow is `allowed`. A rule deny is `triggered rules: ` plus the ids joined by `", "`. A policy file that cannot be enforced uses `receiptd: policy missing`, `receiptd: policy unreadable`, or `receiptd: policy invalid`. | Writer always sets it. |
+| `policy_sha256` | string | 64 lowercase hex characters, or empty. PreToolUse: SHA-256 of the raw policy file bytes parsed and enforced, from one read. The default file is `receiptd/hooks/default_pretooluse.policy.json`. `--policy PATH` is that path. Empty when those bytes could not be read. Stop receipts are empty: that hook does not evaluate a policy file, and the test-command digest is `args_sha256` only. See [Limitations](#limitations). | Writer always sets it. |
 | `prev_hash` | string | 64 lowercase hex characters. Hash of the previous receipt, or the genesis value for the first receipt. | Writer always sets it. Verifier requires `prev_hash`, or `prev_receipt_hash` when `prev_hash` is missing or empty, to equal the previous receipt hash. |
 
 ### Outside the signature
@@ -194,7 +194,7 @@ For `receiptd verify --ledger` (and for the default ledger `.receiptd/receipts.j
 
 `receiptd verify <package.json>` is the other command. Exit `0` means `AUTHENTIC`. Exit `1` means the verdict was `TAMPERED` or `INVALID`. Exit `2` means the package path does not exist, or neither a package nor a ledger was given and neither default ledger file exists. A ledger tamper exits `2`. A run-package verdict other than `AUTHENTIC` exits `1`.
 
-`tools/verify_standalone.py` runs the ledger steps above and does not import the receiptd package. It uses the same exit codes for a ledger: `0` on success, `2` on tamper, a missing file, or a non-JSON line. It also prints each receipt's `policy_sha256`. When that value is the fixed label hash in [Limitations](#limitations), the line says so. Every such line says the policy text was not checked. `receiptd verify` does not print `policy_sha256`.
+`tools/verify_standalone.py` runs the ledger steps above and does not import the receiptd package. It uses the same exit codes for a ledger: `0` on success, `2` on tamper, a missing file, or a non-JSON line. It also prints each receipt's `policy_sha256`. It does not recompute that digest and it does not check policy text. A value equal to the legacy label hash in [Limitations](#limitations) is described as that label, whose inputs were not the rules that ran. Any other non-empty value is described as a recorded digest of policy bytes that this checker did not recompute. An empty value is reported as absent. `receiptd verify` does not print `policy_sha256`.
 
 ## Limitations
 
@@ -202,38 +202,44 @@ Receipts are written only for tool calls that enter the hook and reach the appen
 
 A receipt does not identify a model. Nothing in the signed fields, the hash, or the checkpoint is a model name, model version, or provider. The ledger does not prove which model produced a call.
 
-`policy_sha256` on the PreToolUse path is not a digest of the rules that decided the call. The default value is SHA-256 of the UTF-8 label `DEFAULT_RULES:POL-01,POL-02,POL-03`, which is `4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278`. The regexes in `DEFAULT_RULES` are not inputs to that hash. `--policy PATH` replaces it with SHA-256 of the raw file bytes when the file exists, and the decision function still uses the hardcoded regexes rather than the file. **Known defect, being fixed.** The Stop hook stores SHA-256 of the test-command string in the same field, which is also not a policy document.
+`policy_sha256` on a PreToolUse receipt is the SHA-256 of the raw policy file bytes the hook parsed and enforced, from a single read of that file. The default file is `receiptd/hooks/default_pretooluse.policy.json`, shipped inside the package. `--policy PATH` reads that path once and uses those same bytes for the rules and the digest. A missing, unreadable, or invalid policy is fail-closed: the hook exits `2` and does not substitute another ruleset or a constant hash. When the bytes could not be read, `policy_sha256` is empty and `rule_ids` is `["POLICY_MISSING"]` or `["POLICY_UNREADABLE"]`. When the bytes are not a valid PreToolUse policy, `policy_sha256` is the digest of those bytes, the decision is `deny`, and `rule_ids` is `["POLICY_INVALID"]`.
+
+Receipts written before that binding may contain the legacy label hash `4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278`. That digest is SHA-256 of the UTF-8 label `DEFAULT_RULES:POL-01,POL-02,POL-03`. The regexes that ran were not inputs to it. `tools/verify_standalone.py` still names that value and does not treat it as a policy document.
+
+The Stop hook does not evaluate a policy file. Its `policy_sha256` is empty. The test-command digest is `args_sha256` only. Older Stop receipts stored that command digest in `policy_sha256` as well; those lines still verify, and the standalone checker does not describe them as the legacy label unless the command digest happens to equal it.
+
+`receiptd verify` and `tools/verify_standalone.py` do not re-evaluate rules and do not recompute `policy_sha256` from a policy file. A hash chain that verifies does not by itself prove which policy text was used. Compare `policy_sha256` with SHA-256 of the policy file you still have.
 
 ## Worked example
 
 The two lines below were produced by running `python3 -m receiptd.hooks.claude_code_gate` with stdin `{"tool_name":"Bash","tool_input":{"command":"printf spec"},"session_id":"spec-example"}`, a throwaway key directory, and `RECEIPTD_CHECKPOINT_INTERVAL=1`. The interval is `1` only so this short ledger contains a checkpoint; the default interval is `100`. The private key was discarded and is not in this repository. The public key below is the matching verification key.
 
-`policy_sha256` in the receipt is the constant label hash from [Limitations](#limitations). `merkle_root` equals the receipt `hash` because the tree has one leaf.
+`policy_sha256` in the receipt is SHA-256 of the bytes of `receiptd/hooks/default_pretooluse.policy.json` loaded for this run, `63d670b8827da1c8cb8677f08ff0ae4c91781fe123e39e726f74be70f14b37c4`. `merkle_root` equals the receipt `hash` because the tree has one leaf.
 
 The Ed25519 message for the receipt, as `canonical_json_subset` emitted it, is:
 
 ```json
-{"args_sha256":"80dd78243694b33266384529ee7ce515a379da66b07941fa4ab3af8ad5faea6d","blast_radius":10,"decision":"allow","policy_sha256":"4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278","prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","reason":"allowed","rule_ids":[],"session_id":"spec-example","tool":"Bash","ts":"2026-11-12T09:08:43.095523+00:00","v":1}
+{"args_sha256":"80dd78243694b33266384529ee7ce515a379da66b07941fa4ab3af8ad5faea6d","blast_radius":10,"decision":"allow","policy_sha256":"63d670b8827da1c8cb8677f08ff0ae4c91781fe123e39e726f74be70f14b37c4","prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","reason":"allowed","rule_ids":[],"session_id":"spec-example","tool":"Bash","ts":"2026-11-12T17:26:50.693828+00:00","v":1}
 ```
 
 The checkpoint message is:
 
 ```json
-{"from_seq":1,"merkle_root":"ff244d7d8b771bab912bdb5f62c796bfedcdbb4a42da5b9046c5f7a5e3ab3582","prev_checkpoint_hash":"0000000000000000000000000000000000000000000000000000000000000000","to_seq":1}
+{"from_seq":1,"merkle_root":"92685d2812aaf25afa7d18a5e63430659a3bde0c5f2fea1540c2b1f8ce04290c","prev_checkpoint_hash":"0000000000000000000000000000000000000000000000000000000000000000","to_seq":1}
 ```
 
 Ledger (`receipts.jsonl`), one object per line:
 
 ```jsonl
-{"args_sha256":"80dd78243694b33266384529ee7ce515a379da66b07941fa4ab3af8ad5faea6d","blast_radius":10,"blast_radius_score":10,"decision":"allow","hash":"ff244d7d8b771bab912bdb5f62c796bfedcdbb4a42da5b9046c5f7a5e3ab3582","latency_ms":3.7,"policy_sha256":"4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278","prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","prev_receipt_hash":"0000000000000000000000000000000000000000000000000000000000000000","pubkey_id":"4e6d02a445dcf3ab22de71f9a72098c2abeb92406b26fc2a481d89d20d766e61","reason":"allowed","receipt_sha256":"ff244d7d8b771bab912bdb5f62c796bfedcdbb4a42da5b9046c5f7a5e3ab3582","rule_ids":[],"seq":1,"session_id":"spec-example","sig":"DoB/k+uEBsDvUaw1gdCMFM9nRQfOLZby/AfEliFlvH0PdfsUoOAYnI3gy3vNA53LjGV25X5+/x2S1QMpB6xSAg==","tool":"Bash","tool_input":{"command":"printf spec"},"tool_name":"Bash","triggered_rules":[],"ts":"2026-11-12T09:08:43.095523+00:00","v":1}
-{"checkpoint_hash":"692ff9015bc04617999caf8dbb34dfc2ac610f0222543e8ad27297f05872d812","from_seq":1,"hash":"692ff9015bc04617999caf8dbb34dfc2ac610f0222543e8ad27297f05872d812","merkle_root":"ff244d7d8b771bab912bdb5f62c796bfedcdbb4a42da5b9046c5f7a5e3ab3582","prev_checkpoint_hash":"0000000000000000000000000000000000000000000000000000000000000000","pubkey_id":"4e6d02a445dcf3ab22de71f9a72098c2abeb92406b26fc2a481d89d20d766e61","sig":"OsY/Ch9oohCHlzb9siPJQMpXEfIhl+xhtr7keXFF/aL+yyUyBGJNlJlrqYOLA8ws7nVc6Pb+KT03PYZMaV7+DQ==","to_seq":1,"type":"checkpoint"}
+{"args_sha256":"80dd78243694b33266384529ee7ce515a379da66b07941fa4ab3af8ad5faea6d","blast_radius":10,"blast_radius_score":10,"decision":"allow","hash":"92685d2812aaf25afa7d18a5e63430659a3bde0c5f2fea1540c2b1f8ce04290c","latency_ms":5.51,"policy_sha256":"63d670b8827da1c8cb8677f08ff0ae4c91781fe123e39e726f74be70f14b37c4","prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","prev_receipt_hash":"0000000000000000000000000000000000000000000000000000000000000000","pubkey_id":"8fbc5afa3471cdfbf7b2556d34f2e611d32341c5467cfb536df5709a9a5dc30e","reason":"allowed","receipt_sha256":"92685d2812aaf25afa7d18a5e63430659a3bde0c5f2fea1540c2b1f8ce04290c","rule_ids":[],"seq":1,"session_id":"spec-example","sig":"N22B/sA81fIA7hd+Te86J30nSV9oCOUDyZvD4WIYF1LaUrtvZnum+LsooZ+oHyY8h2aE+5ZxU3bjy+kS4b9YAA==","tool":"Bash","tool_input":{"command":"printf spec"},"tool_name":"Bash","triggered_rules":[],"ts":"2026-11-12T17:26:50.693828+00:00","v":1}
+{"checkpoint_hash":"7bc654be1e2a25f37531646b15c89d88b7daeb9844d67532baf5242953a8823e","from_seq":1,"hash":"7bc654be1e2a25f37531646b15c89d88b7daeb9844d67532baf5242953a8823e","merkle_root":"92685d2812aaf25afa7d18a5e63430659a3bde0c5f2fea1540c2b1f8ce04290c","prev_checkpoint_hash":"0000000000000000000000000000000000000000000000000000000000000000","pubkey_id":"8fbc5afa3471cdfbf7b2556d34f2e611d32341c5467cfb536df5709a9a5dc30e","sig":"FPPksGj3LERwA8d93To7Q6JeOcHUTkmFolobHInxjvIlbSOJXUkXbE4mDLOgRhsaPcPOIM3gspZh8V20dNFuBQ==","to_seq":1,"type":"checkpoint"}
 ```
 
 Public key (`receipts.pub.pem`):
 
 ```pem
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAFUf1ZMuyg5iorRddaQKaJG7/CVZ+QE+0/wHWeMg3ZCg=
+MCowBQYDK2VwAyEAEWaKynOqlNdH1FF2lcBe5X2UYUSui1OzluGASrmQL0g=
 -----END PUBLIC KEY-----
 ```
 

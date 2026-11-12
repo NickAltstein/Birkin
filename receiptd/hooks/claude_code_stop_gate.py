@@ -50,6 +50,11 @@ def sha256_hex(data: str | bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# The Stop hook does not evaluate a policy file. policy_sha256 stays empty.
+# The test-command digest is args_sha256, not policy_sha256.
+STOP_POLICY_SHA256 = ""
+
+
 def detect_test_command() -> str:
     """Auto-detect the repository test runner."""
     env_cmd = os.environ.get("RECEIPTD_TEST_CMD")
@@ -221,7 +226,7 @@ def run_stop_gate(
                     rule_ids=["RULE:TESTS_PASS"],
                     blast_radius=0,
                     reason="receiptd: signing unavailable",
-                    policy_sha256=sha256_hex(resolved_cmd),
+                    policy_sha256=STOP_POLICY_SHA256,
                     prev_hash=prev_hash,
                     extra_fields=extra,
                 )
@@ -241,7 +246,7 @@ def run_stop_gate(
                 rule_ids=["RULE:TESTS_PASS"],
                 blast_radius=0,
                 reason=reason,
-                policy_sha256=sha256_hex(resolved_cmd),
+                policy_sha256=STOP_POLICY_SHA256,
                 prev_hash=prev_hash,
                 extra_fields=extra,
             )
@@ -310,7 +315,7 @@ def run_stop_gate(
                 rule_ids=["RULE:TESTS_PASS"],
                 blast_radius=100,
                 reason="receiptd: signing unavailable",
-                policy_sha256=sha256_hex(resolved_cmd),
+                policy_sha256=STOP_POLICY_SHA256,
                 prev_hash=prev_hash,
                 extra_fields=extra,
             )
@@ -330,7 +335,7 @@ def run_stop_gate(
             rule_ids=["RULE:TESTS_PASS"],
             blast_radius=100,
             reason=reason,
-            policy_sha256=sha256_hex(resolved_cmd),
+            policy_sha256=STOP_POLICY_SHA256,
             prev_hash=prev_hash,
             extra_fields=extra,
         )
