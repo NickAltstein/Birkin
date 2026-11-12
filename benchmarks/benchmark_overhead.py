@@ -3,7 +3,7 @@
 Receiptd: Reproducible Critical-Path Overhead Benchmark
 Measures:
   1. AST & regex policy evaluation (`evaluate_payload`)
-  2. RFC-8785 JCS canonicalization (`canonicalize_jcs`)
+  2. Canonical JSON serialization, sorted keys (`canonicalize_jcs`)
   3. SHA-256 payload digest (`sha256_hex`)
   4. Native Ed25519 digital signature (`sk.sign`)
   5. Full cold-process hook invocation (`python3 -m receiptd.hooks.claude_code_gate`)
