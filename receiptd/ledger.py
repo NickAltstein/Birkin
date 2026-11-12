@@ -26,6 +26,7 @@ GENESIS_HASH = "0" * 64
 SIGNABLE_RECEIPT_FIELDS = (
     "args_sha256",
     "blast_radius",
+    "code_sha256",
     "decision",
     "policy_sha256",
     "prev_hash",
@@ -108,6 +109,7 @@ def build_signed_receipt(
     policy_sha256: str,
     prev_hash: str,
     extra_fields: dict[str, Any] | None = None,
+    code_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Construct and Ed25519-sign an authorization receipt over canonical JSON (sorted keys) bytes."""
     receipt: dict[str, Any] = {
@@ -124,7 +126,10 @@ def build_signed_receipt(
         "prev_hash": prev_hash,
     }
 
-    # Ed25519 signature over canonical JSON of the 11 specification fields
+    if code_sha256 is not None:
+        receipt["code_sha256"] = code_sha256
+
+    # Ed25519 signature over the canonical authorization fields
     canonical_bytes = canonical_json_subset(receipt, SIGNABLE_RECEIPT_FIELDS)
     sig = sk.sign(canonical_bytes)
     pubkey_id = get_pubkey_id(sk)
