@@ -82,7 +82,7 @@ pip install git+https://github.com/NickAltstein/receiptd && receiptd init --clau
 ```
 
 ### 1. PreToolUse Gate: Intercept Actions Before Execution
-Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Receiptd evaluates the canonicalized JSON-RPC payload outside the model before execution. It includes default deterministic rules for high-risk exfiltration, destructive filesystem/DDL commands, and privilege escalation (`receiptd/hooks/claude_code_gate.py`), which can be extended with custom project policies:
+Every time Claude Code attempts to run Bash, Write, Edit, or any MCP tool, Receiptd evaluates the canonicalized JSON-RPC payload outside the model before execution. The default rules for high-risk exfiltration, destructive filesystem/DDL commands, and privilege escalation ship as `receiptd/hooks/default_pretooluse.policy.json`. The PreToolUse hook loads that file, or `--policy PATH`, from one read and records SHA-256 of those bytes. A missing or invalid policy is fail-closed.
 
 ```text
 [RECEIPTD HARD BLOCK] BLOCKED_FAIL_CLOSED (decision 0.94 ms in-hook, excludes Python startup)
@@ -224,7 +224,7 @@ Every evaluated tool call emits a deterministic receipt verifiable offline via `
   "rule_ids": ["POL-02:DESTRUCTIVE_DDL_OR_FS"],
   "blast_radius": 90,
   "reason": "triggered rules: POL-02:DESTRUCTIVE_DDL_OR_FS",
-  "policy_sha256": "4c396e2e2f56376e576fb1363d0d6bdb497df548219f0a573bb81fea458af278",
+  "policy_sha256": "63d670b8827da1c8cb8677f08ff0ae4c91781fe123e39e726f74be70f14b37c4",
   "prev_hash": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
   "sig": "jhKJ03UO1wReWWDMMLqJ6OSusH8TtwsWJzxVZJi5pckeFpxzqvLGBq0scwRqo3CUnWDSeT0/8Roon0bUAhubCw==",
   "pubkey_id": "d1cbd3b75704f8e4080c0b6e5694271f94fef4438e0fbe1534c6c62bde743370",
