@@ -34,40 +34,26 @@ from receiptd.ledger import (
     record_ledger_anchor,
 )
 
-FROZEN_POLICY_SHA256 = "b7ff71664ac6fa1cf0a7225dc94be84b198f5d3429c32c941d39dc0169b9f874"
+POLICY_PATH = Path(__file__).resolve().parents[1] / "POLICY.md"
 
-# Tools capable of network egress or remote data transmission
-TRANSMITTING_TOOLS = frozenset({
-    "http_post", "http_get", "http_request", "send_data", "log_activity",
-    "admin_exfil", "send_email", "upload_file", "exfil", "post_data",
-    "submit_data", "send_notification", "configure_workspace",
-})
 
-# Egress allowlist: Only explicitly pre-approved internal service endpoints are allowed.
-# Everything else (including localhost, IP addresses, external hosts) fails closed.
-APPROVED_EGRESS_HOSTS = frozenset({
-    "api.internal.company.com",
-    "gateway.internal.company.com",
-})
-
-# Generic file patterns that protect credentials and environment files
-PROTECTED_FILE_PATTERNS = [
-    re.compile(r"\.env(\..*)?$", re.I),
-    re.compile(r"(\.aws/|\.ssh/|id_rsa|id_ed25519)", re.I),
-    re.compile(r"(credentials|secrets?|tokens?|passwords?|keychain).*\.(json|txt|env|yaml|yml|conf|cfg|pem|key)$", re.I),
-]
-
-# Sensitive serialized credential patterns
-GENERIC_SECRET_PATTERNS = [
-    re.compile(r"(?i)(bearer\s+[a-z0-9_\-\.]{20,}|ghp_[a-z0-9]{36}|sk_live_[a-z0-9]{24,}|-----BEGIN\s+PRIVATE\s+KEY-----)"),
-    re.compile(r"(?i)(password|secret_key|api_key|access_token)\s*[:=]\s*['\"][^'\"]{8,}['\"]"),
-]
-
-# Privileged mutation tool patterns requiring interactive confirmation
-PRIVILEGED_TOOL_PATTERN = re.compile(
-    r"(payment|refund|pay_|charge|payout|transfer|send_money|wire_transfer|disburse|delete|destroy|drop_table|truncate|purge)",
-    re.I,
-)
+def _load_policy() -> tuple[dict[str, Any], str]:
+    snapshot = POLICY_PATH.read_bytes()
+    sections = re.findall(r"(?ms)^```json\n(.*?)^```[ \t]*$", snapshot.decode("utf-8"))
+    if len(sections) != 1:
+        raise ValueError("Expected one runtime configuration block in POLICY.md")
+    rules = json.loads(sections[0])
+    for key in ("protected_file_patterns", "generic_secret_patterns"):
+        rules[key] = [re.compile(**pattern) for pattern in rules[key]]
+    rules["privileged_tool_pattern"] = re.compile(**rules["privileged_tool_pattern"])
+    for key in ("transmitting_tools", "approved_egress_hosts", "file_read_tools"):
+        tools_or_hosts = rules[key]
+        if not isinstance(tools_or_hosts, list) or not all(
+            isinstance(value, str) and value for value in tools_or_hosts
+        ):
+            raise ValueError(f"Expected a list of strings for {key}")
+        rules[key] = frozenset(tools_or_hosts)
+    return rules, sha256_hex(snapshot)
 
 
 def _extract_destination_host(arguments: dict[str, Any]) -> str:
@@ -87,12 +73,19 @@ def evaluate_policy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str
 
     Returns: (decision, rule_id, risk_score, reason)
     """
+    rules, _ = _load_policy()
+    return _evaluate_policy(tool_name, arguments, rules)
+
+
+def _evaluate_policy(
+    tool_name: str, arguments: dict[str, Any], rules: dict[str, Any]
+) -> tuple[str, str, int, str]:
     args_str = json.dumps(arguments, default=str)
 
     # 1. POL-NET-01: Egress Allowlist Check (deny all unapproved hosts)
-    if tool_name in TRANSMITTING_TOOLS:
+    if tool_name in rules["transmitting_tools"]:
         host = _extract_destination_host(arguments)
-        if host not in APPROVED_EGRESS_HOSTS:
+        if host not in rules["approved_egress_hosts"]:
             return (
                 "deny",
                 "POL-NET-01:EGRESS_ALLOWLIST",
@@ -101,9 +94,9 @@ def evaluate_policy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str
             )
 
     # 2. POL-FS-01: Credential and Dotenv Protection
-    if tool_name in {"read_file", "read_workspace_file", "load_workspace_config", "read_config", "fetch_config"}:
+    if tool_name in rules["file_read_tools"]:
         path_arg = str(arguments.get("path") or arguments.get("file_path") or arguments.get("filename") or "")
-        for pat in PROTECTED_FILE_PATTERNS:
+        for pat in rules["protected_file_patterns"]:
             if pat.search(path_arg):
                 return (
                     "deny",
@@ -113,7 +106,7 @@ def evaluate_policy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str
                 )
 
     # 3. POL-SEC-01: Sensitive Secret Exfiltration
-    for pat in GENERIC_SECRET_PATTERNS:
+    for pat in rules["generic_secret_patterns"]:
         if pat.search(args_str):
             return (
                 "deny",
@@ -123,7 +116,7 @@ def evaluate_policy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str
             )
 
     # 4. POL-ACT-01: Privileged Mutation Confirmation
-    if PRIVILEGED_TOOL_PATTERN.search(tool_name):
+    if rules["privileged_tool_pattern"].search(tool_name):
         return (
             "deny",
             "POL-ACT-01:PRIVILEGED_MUTATION_CONFIRMATION",
@@ -146,6 +139,7 @@ def check_and_record_receipt(
 
     Returns: (is_allowed, decision, rule_id, receipt_dict)
     """
+    rules, policy_sha256 = _load_policy()
     ledger_p = Path(ledger_path)
     ledger_p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -158,7 +152,7 @@ def check_and_record_receipt(
 
     # Evaluate policy (fail closed on any error)
     try:
-        decision, rule_id, risk_score, reason = evaluate_policy(tool_name, arguments)
+        decision, rule_id, risk_score, reason = _evaluate_policy(tool_name, arguments, rules)
     except Exception as exc:
         decision, rule_id, risk_score, reason = ("deny", "POL-ERR-01:EVALUATION_ERROR", 100, f"Error: {exc}")
 
@@ -182,7 +176,7 @@ def check_and_record_receipt(
                 rule_ids=[rule_id],
                 blast_radius=risk_score,
                 reason=reason,
-                policy_sha256=FROZEN_POLICY_SHA256,
+                policy_sha256=policy_sha256,
                 prev_hash=last_receipt_hash,
             )
         except Exception as exc:
@@ -197,7 +191,7 @@ def check_and_record_receipt(
                 rule_ids=[rule_id, "ERR-SIGNING-FAILED"],
                 blast_radius=100,
                 reason=f"Failed to sign: {exc}",
-                policy_sha256=FROZEN_POLICY_SHA256,
+                policy_sha256=policy_sha256,
                 prev_hash=last_receipt_hash,
                 error_msg=str(exc),
             )

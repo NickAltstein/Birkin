@@ -58,3 +58,66 @@ Status: FROZEN
 * **Decision**: `allow`
 * **Risk Score**: 0
 * **Reason**: "Tool authorized under baseline security policy"
+
+## Runtime configuration
+
+The gate reads this JSON block and hashes the complete policy file from the same byte snapshot. The block defines the configurable predicates. The proxy implements their order, outcomes, and receipt handling.
+
+```json
+{
+  "transmitting_tools": [
+    "admin_exfil",
+    "configure_workspace",
+    "exfil",
+    "http_get",
+    "http_post",
+    "http_request",
+    "log_activity",
+    "post_data",
+    "send_data",
+    "send_email",
+    "send_notification",
+    "submit_data",
+    "upload_file"
+  ],
+  "approved_egress_hosts": [
+    "api.internal.company.com",
+    "gateway.internal.company.com"
+  ],
+  "file_read_tools": [
+    "fetch_config",
+    "load_workspace_config",
+    "read_config",
+    "read_file",
+    "read_workspace_file"
+  ],
+  "protected_file_patterns": [
+    {
+      "pattern": "\\.env(\\..*)?$",
+      "flags": 34
+    },
+    {
+      "pattern": "(\\.aws/|\\.ssh/|id_rsa|id_ed25519)",
+      "flags": 34
+    },
+    {
+      "pattern": "(credentials|secrets?|tokens?|passwords?|keychain).*\\.(json|txt|env|yaml|yml|conf|cfg|pem|key)$",
+      "flags": 34
+    }
+  ],
+  "generic_secret_patterns": [
+    {
+      "pattern": "(?i)(bearer\\s+[a-z0-9_\\-\\.]{20,}|ghp_[a-z0-9]{36}|sk_live_[a-z0-9]{24,}|-----BEGIN\\s+PRIVATE\\s+KEY-----)",
+      "flags": 34
+    },
+    {
+      "pattern": "(?i)(password|secret_key|api_key|access_token)\\s*[:=]\\s*['\\\"][^'\\\"]{8,}['\\\"]",
+      "flags": 34
+    }
+  ],
+  "privileged_tool_pattern": {
+    "pattern": "(payment|refund|pay_|charge|payout|transfer|send_money|wire_transfer|disburse|delete|destroy|drop_table|truncate|purge)",
+    "flags": 34
+  }
+}
+```
