@@ -56,6 +56,10 @@ def _load_policy() -> tuple[dict[str, Any], str]:
     return rules, sha256_hex(snapshot)
 
 
+RUNTIME_RULES, POLICY_SHA256 = _load_policy()
+CODE_SHA256 = sha256_hex(Path(__file__).read_bytes())
+
+
 def _extract_destination_host(arguments: dict[str, Any]) -> str:
     """Extract host string from URL or destination argument."""
     for key in ("url", "destination", "endpoint", "to"):
@@ -73,8 +77,7 @@ def evaluate_policy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str
 
     Returns: (decision, rule_id, risk_score, reason)
     """
-    rules, _ = _load_policy()
-    return _evaluate_policy(tool_name, arguments, rules)
+    return _evaluate_policy(tool_name, arguments, RUNTIME_RULES)
 
 
 def _evaluate_policy(
@@ -139,7 +142,6 @@ def check_and_record_receipt(
 
     Returns: (is_allowed, decision, rule_id, receipt_dict)
     """
-    rules, policy_sha256 = _load_policy()
     ledger_p = Path(ledger_path)
     ledger_p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -152,7 +154,7 @@ def check_and_record_receipt(
 
     # Evaluate policy (fail closed on any error)
     try:
-        decision, rule_id, risk_score, reason = _evaluate_policy(tool_name, arguments, rules)
+        decision, rule_id, risk_score, reason = evaluate_policy(tool_name, arguments)
     except Exception as exc:
         decision, rule_id, risk_score, reason = ("deny", "POL-ERR-01:EVALUATION_ERROR", 100, f"Error: {exc}")
 
@@ -176,8 +178,9 @@ def check_and_record_receipt(
                 rule_ids=[rule_id],
                 blast_radius=risk_score,
                 reason=reason,
-                policy_sha256=policy_sha256,
+                policy_sha256=POLICY_SHA256,
                 prev_hash=last_receipt_hash,
+                code_sha256=CODE_SHA256,
             )
         except Exception as exc:
             receipt = build_unsigned_signing_error_receipt(
@@ -191,14 +194,14 @@ def check_and_record_receipt(
                 rule_ids=[rule_id, "ERR-SIGNING-FAILED"],
                 blast_radius=100,
                 reason=f"Failed to sign: {exc}",
-                policy_sha256=policy_sha256,
+                policy_sha256=POLICY_SHA256,
                 prev_hash=last_receipt_hash,
-                error_msg=str(exc),
+                extra_fields={"code_sha256": CODE_SHA256, "error_msg": str(exc)},
             )
             decision = "deny"
 
         append_ledger_entry(ledger_p, receipt)
-        if key_dir:
+        if key_dir and "sig" in receipt:
             record_ledger_anchor(seq, receipt["hash"], ledger_path=ledger_p, key_dir=key_dir, sk=sk)
 
     return (decision == "allow", decision, rule_id, receipt)
