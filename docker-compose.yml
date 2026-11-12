@@ -78,12 +78,13 @@ services:
       HERMES_AUDIT_DB: "/data/audit.db"
       HERMES_SKILLS_DIR: "/app/skills"
       HERMES_DRIFT_DIR: "/data/drift"
+      HEALTH_HOST: "0.0.0.0"
       HEALTH_PORT: "9999"
     volumes:
       - birkin-data:/data
       - ./skills:/app/skills:ro
     ports:
-      - "9999:9999"
+      - "127.0.0.1:9999:9999"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
