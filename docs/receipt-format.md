@@ -57,7 +57,7 @@ These eleven names are `SIGNABLE_RECEIPT_FIELDS`. The signature input is their c
 | `blast_radius` | integer | PreToolUse starts at `10`, adds the matched rule weights, and caps at `100`. A missing tool name or a non-object `tool_input` scores `100` and is denied. Any triggered rule denies, as does a score of `75` or more. Stop success writes `0`; stop failure writes `100`. | Writer always sets it. |
 | `reason` | string | PreToolUse allow is `allowed`. A deny is `triggered rules: ` plus the ids joined by `", "`. | Writer always sets it. |
 | `policy_sha256` | string | 64 lowercase hex characters. See [Limitations](#limitations). Not a hash of the regexes that ran. | Writer always sets it. |
-| `prev_hash` | string | 64 lowercase hex characters. Hash of the previous receipt, or the genesis value for the first receipt. | Writer always sets it. Verifier requires `prev_hash`, or `prev_receipt_hash` when `prev_hash` is missing, to equal the previous receipt hash. |
+| `prev_hash` | string | 64 lowercase hex characters. Hash of the previous receipt, or the genesis value for the first receipt. | Writer always sets it. Verifier requires `prev_hash`, or `prev_receipt_hash` when `prev_hash` is missing or empty, to equal the previous receipt hash. |
 
 ### Outside the signature
 
@@ -105,7 +105,7 @@ Keys live in `$RECEIPTD_KEY_DIR`, or `~/.receiptd` when that variable is unset. 
 
 `RECEIPTD_SIGNING_KEY`, or else `BIRKIN_SIGNING_KEY`, replaces the files for that process. If the value contains `BEGIN`, it is PEM. Otherwise the writer tries standard Base64 of the 32-byte seed, and if that fails it uses the UTF-8 bytes of the string as the seed.
 
-`receiptd verify` checks signatures with, in order: the `--pubkey` option, then `RECEIPTD_PUBLIC_KEY`, then the public PEM from the key directory. The option and the environment variable are key material, not a filesystem path: PEM when the string contains `BEGIN`, otherwise standard Base64 of the raw 32-byte public key. The CLI help text calls `--pubkey` a path; the verifier does not open one.
+`receiptd verify` checks signatures with, in order: the `--pubkey` option, then `RECEIPTD_PUBLIC_KEY`, then the public PEM from the key directory. The option and the environment variable are key material, not a filesystem path: PEM when the string contains `BEGIN`, otherwise standard Base64 of the raw 32-byte public key. The CLI help text calls `--pubkey` a path; the verifier does not open one. If `receiptd_ed25519.pub.pem` is missing, `receiptd verify` loads the private key, creating one when the directory has none, and uses that public key. `tools/verify_standalone.py` reads the public PEM file only and does not create a key.
 
 ## Hash chaining
 
@@ -162,7 +162,7 @@ The checkpoint signature covers only this canonical JSON object:
 `receiptd verify --ledger PATH` runs the steps below in `receiptd.cli._verify_ledger_file`. It needs no network. It does not re-evaluate policy rules.
 
 1. Read the file as UTF-8. Reject a missing file. Parse every non-blank line as JSON. Reject a bad line.
-2. An empty file is success, unless a signed anchor (below) records `last_seq` greater than `0` for this path. That case is a failure.
+2. An empty file is success, unless `--allow-unanchored` is unset and an anchor for this path has `last_seq` greater than `0`. That early check looks only at `ledgers[<absolute path>]` or at the top-level object when its `ledger_path` matches. It does not check the anchor signature. A hit with `last_seq` greater than `0` is a failure.
 3. Resolve the public key as described under Signing. A missing key fails a receipt that has `sig`. A checkpoint signature is checked only when both `sig` and a public key are present.
 4. Walk the lines in order. Start the receipt chain and the checkpoint chain at the genesis value.
 5. For a checkpoint:
@@ -172,12 +172,12 @@ The checkpoint signature covers only this canonical JSON object:
    - If `hash` or `checkpoint_hash` is present, it must equal the recomputed record digest.
    - Advance the checkpoint chain to that digest.
 6. For a receipt:
-   - `prev_hash` (or `prev_receipt_hash` if `prev_hash` is absent) must equal the receipt chain value.
+   - `prev_hash` (or `prev_receipt_hash` when `prev_hash` is missing or empty) must equal the receipt chain value.
    - If `hash` or `receipt_sha256` is present, it must equal the recomputed digest. Otherwise the recomputed digest is used as the link.
    - If `sig` is present, a public key must be available and the signature must verify over whichever of the eleven signed names are present.
    - If `sig` is absent, `signing_error` must be true and `decision` must be `deny`.
    - Advance the receipt chain to the digest. Remember the digest under `seq`.
-7. Unless `--allow-unanchored` is set, load `$RECEIPTD_KEY_DIR/ledger_state.json`, or `state.json` in that directory if the first file is absent. The anchor for this ledger is the object stored under the resolved absolute path. Its `sig` must verify over the canonical JSON of exactly these three fields: `last_hash` (string), `last_seq` (integer), and `ledger_path` (the absolute path). The receipt count must not be lower than `last_seq`. When `last_seq` is one of the receipt seqs, that receipt's hash must equal `last_hash`. A ledger with receipts and no anchor for its path fails this step. The anchor is local state. It is not a ledger line. A copy of the JSONL on another machine will not satisfy it, because the signed path is absolute; portable checks pass `--allow-unanchored` and supply the public key.
+7. Unless `--allow-unanchored` is set, load `$RECEIPTD_KEY_DIR/ledger_state.json`, or `state.json` in that directory if the first file is absent. The anchor object is chosen in this order: `ledgers[<absolute path>]` when that value is an object; the top-level value at the absolute path when it is an object; the top-level object when its `ledger_path` equals the absolute path; the top-level object when it has `last_seq` and no `ledger_path`. Its `sig` must verify over the canonical JSON of exactly these three fields: `last_hash` (string), `last_seq` (integer), and `ledger_path` (the absolute path). The receipt count must not be lower than `last_seq`. When `last_seq` is one of the receipt seqs, that receipt's hash must equal `last_hash`. A ledger with receipts and no anchor for its path fails this step. The anchor is local state. It is not a ledger line. A copy of the JSONL on another machine will not satisfy it, because the signed path is absolute; portable checks pass `--allow-unanchored` and supply the public key.
 8. If the highest checkpoint `to_seq` is below the receipt count, print a warning that the tail is uncheckpointed. The warning does not change the result. Those receipts were still hash-checked and signature-checked. They are not inside a signed Merkle root. The text is: `Warning: Uncheckpointed tail: receipts {start} to {count} have not been sealed in a Merkle checkpoint. Missing receipts after the last checkpoint cannot be proven.`
 9. On success with at least one line, the process prints `VERDICT: AUTHENTIC` with the receipt count, the checkpoint count, and `Unsigned deny receipts accepted: N`, and exits `0`. An empty file that passes step 2 prints `Ledger is empty. No execution frames recorded.` and exits `0` without the `AUTHENTIC` line. `--format json` only suppresses the table. The verdict is still those text lines.
 
@@ -193,6 +193,8 @@ For `receiptd verify --ledger` (and for the default ledger `.receiptd/receipts.j
 | `2` | The file is missing, a line is not JSON, or any check above failed (chain, hash, signature, Merkle root, anchor). A failed chain, hash, signature, Merkle, or anchor check prints `TAMPER DETECTED` and the receipt sequence, checkpoint number, or seq range involved. A missing file or a non-JSON line prints that error instead. |
 
 `receiptd verify <package.json>` is the other command. Exit `0` means `AUTHENTIC`. Exit `1` means the verdict was `TAMPERED` or `INVALID`. Exit `2` means the package path does not exist, or neither a package nor a ledger was given and neither default ledger file exists. A ledger tamper exits `2`. A run-package verdict other than `AUTHENTIC` exits `1`.
+
+`tools/verify_standalone.py` runs the ledger steps above and does not import the receiptd package. It uses the same exit codes for a ledger: `0` on success, `2` on tamper, a missing file, or a non-JSON line. It also prints each receipt's `policy_sha256`. When that value is the fixed label hash in [Limitations](#limitations), the line says so. Every such line says the policy text was not checked. `receiptd verify` does not print `policy_sha256`.
 
 ## Limitations
 
