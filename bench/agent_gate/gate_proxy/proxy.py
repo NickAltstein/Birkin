@@ -1,5 +1,5 @@
 """
-bench.mcpvenom.gate_proxy.proxy
+bench.agent_gate.gate_proxy.proxy
 ===============================
 
 Receiptd Gate Proxy for MCP / LangChain agent evaluation.
